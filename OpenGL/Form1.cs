@@ -44,6 +44,7 @@ namespace OpenGL
             @"#version 330 core
 
             uniform bool  IsGrid;
+            uniform bool UseSpecular;
 
             uniform vec3  LightPos;
             uniform vec3  ViewPos;
@@ -65,14 +66,24 @@ namespace OpenGL
                 }
 
                 vec3 N = normalize(vNormal);
-                vec3 L = normalize(LightPos - vWorldPos);
+                vec3 L = normalize(LightPos - vWorldPos); //fra overflade til lyskilde
+                vec3 V = normalize(ViewPos - vWorldPos); //fra overflade til kamera
 
-                float NdotL = max(dot(N, L), 0.0);
+                float NdotL = max(dot(N, L), 0.0); //hvor meget af lyset der rammer overfladen
 
                 vec3 diffuse = NdotL * vertexColor;
                 vec3 ambient = 0.1 * vertexColor;
 
-                vec3 color = LightColor * (ambient + diffuse);
+                float specStrength = 0.0;
+                if (UseSpecular && NdotL > 0.0) {
+                    vec3 H = normalize(L + V);
+                    float NdotH = max(dot(N, H), 0.0);
+                    specStrength = pow(NdotH, shininess);
+                }
+                vec3 specular = SpecularColor * specStrength;
+
+                vec3 color = LightColor * (ambient + diffuse + specular);
+
 
                 FragColor = vec4(color, 1.0);
             }";
@@ -115,6 +126,9 @@ namespace OpenGL
         private TrackBar _tbTwist, _tbBend, _tbBulge;
         private Label _lblTwist, _lblBend, _lblBulge;
         private CheckBox _chkGrid;
+
+        private int uUseSpecular;
+        private CheckBox _chkSpecular;
 
         public Form1()
         {
@@ -204,6 +218,25 @@ namespace OpenGL
             panel.Controls.Add(_chkGrid);
             y += 32;
 
+            _chkSpecular = new CheckBox
+            {
+                Text = "Specular (Blinn-Phong)",
+                Left = 12,
+                Top = y,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Checked = true,
+                AutoSize = true
+            };
+            _chkSpecular.CheckedChanged += (s, e) =>
+            {
+                glControl1.MakeCurrent();
+                if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular.Checked ? 1 : 0);
+                glControl1.Invalidate();
+            };
+            panel.Controls.Add(_chkSpecular);
+            y += 32;
+
         }
 
         #region load, resize, paint
@@ -218,11 +251,16 @@ namespace OpenGL
             _program = BuildProgram(VertexSrc, FragmentSrc);
             GL.UseProgram(_program);
 
+            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular?.Checked == true ? 1 : 0);
+            uUseSpecular = GL.GetUniformLocation(_program, "UseSpecular");
+            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, 1);
+
             int uLightPos = GL.GetUniformLocation(_program, "LightPos");
             int uShiny = GL.GetUniformLocation(_program, "shininess");
             int uSpecCol = GL.GetUniformLocation(_program, "SpecularColor");
             uLightColor = GL.GetUniformLocation(_program, "LightColor");
 
+            
             if (uLightPos >= 0) GL.Uniform3(uLightPos, new Vector3(0f, 3f, 3f)); 
             if (uShiny >= 0) GL.Uniform1(uShiny, 32f);
             if (uSpecCol >= 0) GL.Uniform3(uSpecCol, new Vector3(1f, 1f, 1f));
