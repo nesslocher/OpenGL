@@ -1,152 +1,94 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.Linq;
 using System.Windows.Forms;
 using OpenTK;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
 
-
 namespace OpenGL
 {
     public partial class Form1 : Form
     {
-        //shaders
-        private const string VertexSrc = 
+        private const string VertexSrc =
             @"#version 330 core
 
             layout (location=0) in vec3 Pos;
             layout (location=1) in vec3 Color;
-            layout (location=2) in vec2 UV;
+            layout (location=2) in vec2 UV; 
             layout (location=3) in vec3 Normal;
 
             uniform mat4 Projection;
             uniform mat4 View;
             uniform mat4 Model;
 
-            uniform float BulgeAmount;
-            uniform float BendAmount;
-            uniform float TwistAmount;
-            uniform bool IsGrid;
-
             out vec3 vertexColor;
-            out vec2 uv;
             out vec3 vNormal;
             out vec3 vWorldPos;
 
             void main() {
-
-                vec3 scaledPos = Pos;
-
-                float angleTwist = IsGrid ? 0.0 : scaledPos.y * TwistAmount;
-                float c = cos(angleTwist), s = sin(angleTwist);
-                mat4 twist = mat4(
-                    c, 0.0, -s, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    s, 0.0,  c, 0.0,
-                    0.0, 0.0, 0.0, 1.0
-                );
-                vec4 twistedPos = twist * vec4(scaledPos, 1.0);
-
-                float bendAngle = IsGrid ? 0.0 : scaledPos.z * BendAmount;
-                float cb = cos(bendAngle), sb = sin(bendAngle);
-                mat4 bend = mat4(
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0,  cb, -sb, 0.0,
-                    0.0,  sb,  cb, 0.0,
-                    0.0, 0.0, 0.0, 1.0
-                );
-                vec4 localPos = bend * twistedPos;
-
-                //bulge
-                if(!IsGrid){
-                    vec3 fromCenter = localPos.xyz;
-                    float dist = length(fromCenter);
-                    float bulge = exp(-dist * dist * 4.0) * BulgeAmount;
-                    localPos.xyz += fromCenter * bulge;
-                }
-
-                vec4 worldPos = Model * localPos;
+                vec4 worldPos = Model * vec4(Pos, 1.0);
                 vWorldPos = worldPos.xyz;
 
-                mat3 linearPart = mat3(Model) * mat3(bend) * mat3(twist);
-                mat3 nrmMat = transpose(inverse(linearPart));
-                vNormal = normalize(nrmMat * Normal);
+//normal i world space
+                mat3 normalMatrix = transpose(inverse(mat3(Model)));
+                vNormal = normalize(normalMatrix * Normal);
 
                 gl_Position = Projection * View * worldPos;
 
-                uv = UV;
                 vertexColor = Color;
             }";
 
         private const string FragmentSrc =
             @"#version 330 core
 
-            uniform sampler2D Texture;
-            uniform vec4  Display;
             uniform bool  IsGrid;
 
             uniform vec3  LightPos;
             uniform vec3  ViewPos;
             uniform float shininess;
             uniform vec3  SpecularColor;
+            uniform vec3  LightColor;
 
             in vec3 vertexColor;
-            in vec2 uv;
             in vec3 vWorldPos;
+            in vec3 vNormal;
 
             out vec4 FragColor;
 
-            void main()
-            {
+            void main() {
+
                 if (IsGrid) {
                     FragColor = vec4(vertexColor, 1.0);
                     return;
                 }
 
-                //basefarve
-                vec3 baseColor = mix(vertexColor, texture(Texture, uv).rgb,
-                                     clamp(abs(Display.a), 0.0, 1.0));
-
-                //normal fra den deformerede world-position
-                vec3 Ng = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
-                vec3 V  = normalize(ViewPos - vWorldPos);
-                vec3 N  = faceforward(Ng, V, Ng);
-
-                //lys
+                vec3 N = normalize(vNormal);
                 vec3 L = normalize(LightPos - vWorldPos);
+
                 float NdotL = max(dot(N, L), 0.0);
 
-                //Blinn-Phong
-                float ambient = 0.10;
-                vec3  diffuse = NdotL * baseColor;
+                vec3 diffuse = NdotL * vertexColor;
+                vec3 ambient = 0.1 * vertexColor;
 
-                vec3  H = normalize(L + V);
-                float specPow = max(dot(N, H), 0.0);
-                float spec = (NdotL > 0.0) ? pow(specPow, max(shininess, 1.0)) : 0.0;
-
-                vec3 lightColor = Display.rgb;
-                vec3 color = lightColor * (ambient * baseColor + diffuse) + spec * SpecularColor;
+                vec3 color = LightColor * (ambient + diffuse);
 
                 FragColor = vec4(color, 1.0);
             }";
-
 
         //GPU handles 
         private int _program;
         private int _vao, _vbo;
 
-        //uniform locations
-        private int uScale, uProjection, uModel, uView, uDisplay, uTexture, uIsGrid, uTwist, uBend, uBulge;
+        private int uProjection, uModel, uView, uIsGrid, uLightColor;
 
-        //CPU-side state
-        private readonly List<float> verticesModel = new List<float>(); 
+        private readonly List<float> verticesModel = new List<float>();
         private readonly List<float> verticesGround = new List<float>();
+
         private const int STRIDE = 11 * sizeof(float);
 
-        private int groundVertexCount = 0; 
+        private int groundVertexCount = 0;
         private int modelVertexCount = 0;
 
         private Vector4 Angle = new Vector4(0, 0, 0, 1);
@@ -154,33 +96,29 @@ namespace OpenGL
         private Matrix4 View;
         private Matrix4 Projection;
         private Matrix4 Model;
-        private Vector4 Display = new Vector4(1, 1, 1, 0); 
-        private float TwistAmount = 0f, BendAmount = 0f, BulgeAmount = 0f;
-
-        private readonly List<int> _textures = new List<int>();
-        private int _currentTextureIndex = -1;
 
         private bool _showGrid = true;
+
+        private Vector3 _lightPos = new Vector3(0f, 3f, 3f);
 
         //mouse control
         private bool _dragging = false;
         private Point _lastMouse;
-        private float _yaw = 0f;   
-        private float _pitch = 0f;  
-        private float _distance = -5f; 
+        private float _yaw = 0f;
+        private float _pitch = 0f;
+        private float _distance = -5f;
 
-        private enum ShapeType { Triangle, Quad, Box, SubdividedBox, Cylinder }
+        private enum ShapeType { Triangle, Quad, Box, SubdividedBox, Cylinder, Flade }
         private ShapeType _activeShape = ShapeType.Triangle;
 
-        //UI controls 
-        private TrackBar _tbTwist, _tbBend, _tbBulge, _tbMix;
-        private Label _lblTwist, _lblBend, _lblBulge, _lblMix;
+        //UI controls
+        private TrackBar _tbTwist, _tbBend, _tbBulge;
+        private Label _lblTwist, _lblBend, _lblBulge;
         private CheckBox _chkGrid;
 
         public Form1()
         {
             InitializeComponent();
-
 
             glControl1.Dock = DockStyle.Fill;
 
@@ -188,14 +126,13 @@ namespace OpenGL
             glControl1.Resize += Gl_Resize;
             glControl1.Paint += Gl_Paint;
 
-
             //mouse
             glControl1.MouseDown += GlControl1_MouseDown;
             glControl1.MouseUp += GlControl1_MouseUp;
             glControl1.MouseMove += GlControl1_MouseMove;
             glControl1.MouseWheel += GlControl1_MouseWheel;
 
-            //UI panel til modifiers 
+            //UI panel til modifiers
             var panel = new Panel
             {
                 Width = 260,
@@ -207,7 +144,7 @@ namespace OpenGL
 
             Label MakeLbl(string text, int top)
             {
-                var l = new Label { Text = text, Left = 12, Top = top, Width = 200, ForeColor = Color.LightBlue, BackColor = Color.Transparent };
+                var l = new Label { Text = text, Left = 12, Top = top, Width = 220, ForeColor = Color.LightBlue, BackColor = Color.Transparent };
                 panel.Controls.Add(l);
                 return l;
             }
@@ -227,10 +164,9 @@ namespace OpenGL
                 return tb;
             }
 
-            //ayoutcursor
             int y = 20;
 
-            //figur vælgeren
+            //figurvælger
             var lblShape = MakeLbl("Shape:", y);
             y += 36;
 
@@ -241,7 +177,7 @@ namespace OpenGL
                 Top = y,
                 Width = panel.Width - 24
             };
-            shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder" });
+            shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade" });
             shapeCombo.SelectedIndex = (int)_activeShape;
             shapeCombo.SelectedIndexChanged += (s, e) =>
             {
@@ -252,27 +188,6 @@ namespace OpenGL
             panel.Controls.Add(shapeCombo);
 
             y += 40;
-
-            //sliders og labels
-            _lblTwist = MakeLbl("Twist (rad/unit Y): 0.00", y);
-            y += 24;
-            _tbTwist = MakeTb(y, -400, 400, 0);
-            y += 70;
-
-            _lblBend = MakeLbl("Bend (rad/unit Z): 0.00", y);
-            y += 24;
-            _tbBend = MakeTb(y, -400, 400, 0);
-            y += 70;
-
-            _lblBulge = MakeLbl("Bulge: 0.00", y);
-            y += 24;
-            _tbBulge = MakeTb(y, -300, 500, 0);
-            y += 70;
-
-            _lblMix = MakeLbl("Texture mix: 0.00", y);
-            y += 24;
-            _tbMix = MakeTb(y, 0, 100, 0);
-            y += 70;
 
             //grid checkbox + reset
             _chkGrid = new CheckBox
@@ -289,21 +204,6 @@ namespace OpenGL
             panel.Controls.Add(_chkGrid);
             y += 32;
 
-            var btnReset = new Button { Text = "Reset modifiers", Left = 12, Top = y, Width = panel.Width - 24, Height = 40, ForeColor = Color.LightBlue };
-            btnReset.Click += (s, e) =>
-            {
-                _tbTwist.Value = 0; _tbBend.Value = 0; _tbBulge.Value = 0; _tbMix.Value = 0;
-                OnModifiersChanged(null, EventArgs.Empty);
-            };
-            panel.Controls.Add(btnReset);
-
-            //bind events TIL SIDST, når alle controls findes
-            _tbTwist.ValueChanged += OnModifiersChanged;
-            _tbBend.ValueChanged += OnModifiersChanged;
-            _tbBulge.ValueChanged += OnModifiersChanged;
-            _tbMix.ValueChanged += OnModifiersChanged;
-
-
         }
 
         #region load, resize, paint
@@ -315,62 +215,61 @@ namespace OpenGL
             GL.Enable(EnableCap.DepthTest);
             GL.Enable(EnableCap.CullFace);
 
-            //kald metoden til at bygge shader-programmet
             _program = BuildProgram(VertexSrc, FragmentSrc);
             GL.UseProgram(_program);
 
             int uLightPos = GL.GetUniformLocation(_program, "LightPos");
             int uShiny = GL.GetUniformLocation(_program, "shininess");
             int uSpecCol = GL.GetUniformLocation(_program, "SpecularColor");
-            if (uLightPos >= 0) GL.Uniform3(uLightPos, new Vector3(0f, -2f, -2f)); //lys position
+            uLightColor = GL.GetUniformLocation(_program, "LightColor");
+
+            if (uLightPos >= 0) GL.Uniform3(uLightPos, new Vector3(0f, 3f, 3f)); 
             if (uShiny >= 0) GL.Uniform1(uShiny, 32f);
             if (uSpecCol >= 0) GL.Uniform3(uSpecCol, new Vector3(1f, 1f, 1f));
-
-            if (uTexture >= 0) GL.Uniform1(uTexture, 0);
-
+            if (uLightColor >= 0) GL.Uniform3(uLightColor, new Vector3(1f, 1f, 1f)); 
 
             uProjection = GL.GetUniformLocation(_program, "Projection");
             uModel = GL.GetUniformLocation(_program, "Model");
-            uView = GL.GetUniformLocation(_program, "View");      
-            uDisplay = GL.GetUniformLocation(_program, "Display");
-            uTexture = GL.GetUniformLocation(_program, "Texture");
+            uView = GL.GetUniformLocation(_program, "View");
             uIsGrid = GL.GetUniformLocation(_program, "IsGrid");
-            uTwist = GL.GetUniformLocation(_program, "TwistAmount");
-            uBend = GL.GetUniformLocation(_program, "BendAmount");
-            uBulge = GL.GetUniformLocation(_program, "BulgeAmount");
+
 
             Model = Matrix4.Identity;
             GL.UniformMatrix4(uModel, false, ref Model);
             UploadProjection();
-            GL.Uniform4(uDisplay, Display);
-            GL.Uniform1(uTwist, TwistAmount);
-            GL.Uniform1(uBend, BendAmount);
-            GL.Uniform1(uBulge, BulgeAmount);
+
 
             _distance = -5f;
             _yaw = 0f; _pitch = 0f;
             UploadView();
 
+            Scale = Vector3.One;
+            Angle = new Vector4(0, 0, 0, 1);
+            _translation = Vector3.Zero;
+            UpdateModelMatrix();
 
             verticesModel.Clear();
             verticesGround.Clear();
 
-            //Grid 
+            //grid + pynt
             CreateGroundGrid(width: 100, depth: 100, divX: 100, divZ: 100, yOffset: -1f);
-            CreateMountainGrid(-0f, -0.4f, -40f, 35f, 30f, 30, 20, new float[] { 1f, 0f, 1f }); //lilla
-            CreateMountainGrid(-10f, -0.6f, -40f, 15f, 10f, 20, 10, new float[] { 1f, 1f, 0f }); //gul
-            CreateMountainGrid(20f, -0.5f, -40f, 28f, 22f, 20, 20, new float[] { 0f, 1f, 1f }); //teal
+            CreateMountainGrid(-0f, -0.4f, -40f, 35f, 30f, 30, 20, new float[] { 1f, 0f, 1f });
+            CreateMountainGrid(-10f, -0.6f, -40f, 15f, 10f, 20, 10, new float[] { 1f, 1f, 0f });
+            CreateMountainGrid(20f, -0.5f, -40f, 28f, 22f, 20, 20, new float[] { 0f, 1f, 1f });
             CreateSynthwaveSun(0.0f, -0.6f, -40.0f, 10f, 70, new float[] { 0.7f, 0.0f, 0.0f }, new float[] { 1.0f, 1.0f, 0.0f });
 
             //model
             CreateTriangle(1.0f, 1.0f, 1.0f);
 
+            CreateLightMarker(1.0f);
+
             groundVertexCount = verticesGround.Count / 11;
             modelVertexCount = verticesModel.Count / 11;
 
-            var all = new float[verticesGround.Count + verticesModel.Count];
+            var all = new float[verticesGround.Count + verticesModel.Count + verticesLight.Count];
             verticesGround.CopyTo(all, 0);
             verticesModel.CopyTo(all, verticesGround.Count);
+            verticesLight.CopyTo(all, verticesGround.Count + verticesModel.Count);
 
             _vao = GL.GenVertexArray();
             _vbo = GL.GenBuffer();
@@ -384,7 +283,7 @@ namespace OpenGL
             GL.EnableVertexAttribArray(1); //color
             GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, STRIDE, 3 * sizeof(float));
 
-            GL.EnableVertexAttribArray(2); //uv
+            GL.EnableVertexAttribArray(2); //uv (ikke brugt, men bevares i layout)
             GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, STRIDE, 6 * sizeof(float));
 
             GL.EnableVertexAttribArray(3); //normal
@@ -399,7 +298,6 @@ namespace OpenGL
             UploadProjection();
         }
 
-
         private void Gl_Paint(object sender, PaintEventArgs e)
         {
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
@@ -407,7 +305,6 @@ namespace OpenGL
             GL.BindVertexArray(_vao);
 
             GL.UniformMatrix4(uView, false, ref View);
-
 
             //grid
             if (_showGrid && groundVertexCount > 0)
@@ -424,13 +321,18 @@ namespace OpenGL
             GL.Uniform1(uIsGrid, 0);
             GL.UniformMatrix4(uModel, false, ref Model);
 
-            if (_currentTextureIndex >= 0 && _currentTextureIndex < _textures.Count)
+            if (lightVertexCount > 0)
             {
-                GL.ActiveTexture(TextureUnit.Texture0);
-                GL.BindTexture(TextureTarget.Texture2D, _textures[_currentTextureIndex]);
-                if (uTexture >= 0) GL.Uniform1(uTexture, 0);
+                GL.Uniform1(uIsGrid, 1); 
+                var markerModel = Matrix4.CreateScale(0.1f) * Matrix4.CreateTranslation(_lightPos);
+                GL.UniformMatrix4(uModel, false, ref markerModel);
+
+                int start = groundVertexCount + modelVertexCount;
+                GL.DrawArrays(PrimitiveType.Triangles, start, lightVertexCount);
+
+                GL.Uniform1(uIsGrid, 0);
+                GL.UniformMatrix4(uModel, false, ref Model);
             }
-            GL.Uniform4(uDisplay, Display); 
 
             if (modelVertexCount > 0)
                 GL.DrawArrays(PrimitiveType.Triangles, groundVertexCount, modelVertexCount);
@@ -441,22 +343,38 @@ namespace OpenGL
         }
         #endregion
 
+        private void UpdateModelMatrix()
+        {
+            var qx = Quaternion.FromAxisAngle(Vector3.UnitX, Angle.X);
+            var qy = Quaternion.FromAxisAngle(Vector3.UnitY, Angle.Y);
+            var qz = Quaternion.FromAxisAngle(Vector3.UnitZ, Angle.Z);
+            var q = qz * qy * qx;
+
+            var S = Matrix4.CreateScale(Scale);
+            var R = Matrix4.CreateFromQuaternion(q);
+            var T = Matrix4.CreateTranslation(_translation);
+
+            Model = S * R * T; 
+
+            GL.UniformMatrix4(uModel, false, ref Model);
+            GL.UniformMatrix4(uModel, false, ref Model);
+        }
+
         private void UploadView()
         {
-            //kamera omkring (0,0,0)
             float r = MathF.Max(0.001f, -_distance);
+
             float cx = r * MathF.Cos(_pitch) * MathF.Sin(_yaw);
             float cy = r * MathF.Sin(_pitch);
             float cz = r * MathF.Cos(_pitch) * MathF.Cos(_yaw);
 
-            var eye = new Vector3(cx, cy, cz);
-            var target = Vector3.Zero;
+            var target = _translation;
+            var eye = target + new Vector3(cx, cy, cz);
             var up = Vector3.UnitY;
 
             View = Matrix4.LookAt(eye, target, up);
             GL.UniformMatrix4(uView, false, ref View);
 
-            //fragment shader har brug for kameraets world-pos
             int uViewPos = GL.GetUniformLocation(_program, "ViewPos");
             if (uViewPos >= 0) GL.Uniform3(uViewPos, eye);
         }
@@ -469,32 +387,41 @@ namespace OpenGL
             GL.UniformMatrix4(uProjection, false, ref Projection);
         }
 
-        //modifiers - twist, bend, bulge
+        //modifiers - når vi får sat modifiers ind i projektet
         private void OnModifiersChanged(object sender, EventArgs e)
         {
-            float twist = _tbTwist.Value / 100f; 
-            float bend = _tbBend.Value / 100f; 
-            float bulge = _tbBulge.Value / 100f; 
-            float mix = _tbMix.Value / 100f;
-
-            _lblTwist.Text = $"Twist (rad/unit Y): {twist:0.00}";
-            _lblBend.Text = $"Bend (rad/unit Z): {bend:0.00}";
-            _lblBulge.Text = $"Bulge: {bulge:0.00}";
-            _lblMix.Text = $"Texture mix: {mix:0.00}";
 
             glControl1.MakeCurrent();
-
-            SetTwist(twist);
-            SetBend(bend);
-            SetBulge(bulge);
-
-            Display.W = mix;                 
-            GL.Uniform4(uDisplay, Display);  
 
             glControl1.Invalidate();
         }
 
-        #region Mouse interaction   
+        #region Mouse interaction
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            float step = 0.1f;
+            switch (keyData)
+            {
+                case Keys.W: _translation.Z -= step; break;
+                case Keys.S: _translation.Z += step; break;
+                case Keys.A: _translation.X -= step; break;
+                case Keys.D: _translation.X += step; break;
+                case Keys.Q: _translation.Y -= step; break;
+                case Keys.E: _translation.Y += step; break;
+                case Keys.Left: Angle.Y -= 0.05f; break;
+                case Keys.Right: Angle.Y += 0.05f; break;
+                case Keys.Up: Angle.X -= 0.05f; break;
+                case Keys.Down: Angle.X += 0.05f; break;
+                case Keys.PageUp: Scale *= 1.05f; break;
+                case Keys.PageDown: Scale *= 0.95f; break;
+                default: return base.ProcessCmdKey(ref msg, keyData);
+            }
+            UpdateModelMatrix();
+            UploadView();
+            glControl1.Invalidate();
+            return true;
+        }
+
         private void GlControl1_MouseDown(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
@@ -527,20 +454,15 @@ namespace OpenGL
             glControl1.Invalidate();
         }
 
-
         private void GlControl1_MouseWheel(object sender, MouseEventArgs e)
         {
             float step = 0.5f * (e.Delta / 120f);
-            _distance += step;       
-            UploadView();              
+            _distance += step;
+            UploadView();
             glControl1.Invalidate();
         }
-
-
         #endregion
 
-
-        //selve bygning af shader-programmet
         private static int BuildProgram(string vs, string fs)
         {
             int v = GL.CreateShader(ShaderType.VertexShader);
@@ -567,7 +489,6 @@ namespace OpenGL
             return p;
         }
 
-        //model manipulation
         private void RebuildModelAndUpload()
         {
             verticesModel.Clear();
@@ -589,25 +510,25 @@ namespace OpenGL
                 case ShapeType.Cylinder:
                     CreateCylinder(0.5f, 1.0f, 64);
                     break;
+                case ShapeType.Flade:
+                    CreateFlade(0.5f, 0.5f, 0.5f);
+                    break;
             }
 
             modelVertexCount = verticesModel.Count / 11;
 
-            var all = new float[verticesGround.Count + verticesModel.Count];
+            var all = new float[verticesGround.Count + verticesModel.Count + verticesLight.Count];
             verticesGround.CopyTo(all, 0);
             verticesModel.CopyTo(all, verticesGround.Count);
+            verticesLight.CopyTo(all, verticesGround.Count + verticesModel.Count);
 
             GL.BindVertexArray(_vao);
             GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-
             GL.BufferData(BufferTarget.ArrayBuffer, all.Length * sizeof(float), all, BufferUsageHint.StaticDraw);
-
             GL.BindVertexArray(0);
         }
 
-
-        #region model konstruktion 
-
+        #region model konstruktion
         private bool _activeGround = false;
         private List<float> active => _activeGround ? verticesGround : verticesModel;
 
@@ -638,7 +559,6 @@ namespace OpenGL
             AddTriangle(x1, y1, z1, r1, g1, b1, u1, v1, x4, y4, z4, r4, g4, b4, u4, v4, x3, y3, z3, r3, g3, b3, u3, v3, nx, ny, nz);
         }
 
-        // Shapes
         private void CreateTriangle(float width, float height, float depth)
         {
             float w = width * 0.5f;
@@ -666,7 +586,25 @@ namespace OpenGL
 
         private void CreateBox(float width, float height, float depth)
         {
-            float w = width * 0.5f,  h = height * 0.5f,  d = depth * 0.5f;
+            float w = width * 0.5f, h = height * 0.5f, d = depth * 0.5f;
+
+            // +Z
+            AddQuad(-w, -h, d, 1, 0, 0, 0, 0, -w, h, d, 1, 0, 0, 0, 1, w, h, d, 1, 0, 0, 1, 1, w, -h, d, 1, 0, 0, 1, 0, 0, 0, 1);
+            // -Z
+            AddQuad(w, -h, -d, 0, 1, 0, 0, 0, w, h, -d, 0, 1, 0, 0, 1, -w, h, -d, 0, 1, 0, 1, 1, -w, -h, -d, 0, 1, 0, 1, 0, 0, 0, -1);
+            // +Y
+            AddQuad(-w, h, d, 0, 0, 1, 0, 0, -w, h, -d, 0, 0, 1, 0, 1, w, h, -d, 0, 0, 1, 1, 1, w, h, d, 0, 0, 1, 1, 0, 0, 1, 0);
+            // -Y
+            AddQuad(-w, -h, -d, 1, 0.5f, 0, 0, 0, -w, -h, d, 1, 0.5f, 0, 0, 1, w, -h, d, 1, 0.5f, 0, 1, 1, w, -h, -d, 1, 0.5f, 0, 1, 0, 0, -1, 0);
+            // -X
+            AddQuad(-w, -h, -d, .5f, 0, .5f, 0, 0, -w, h, -d, .5f, 0, .5f, 0, 1, -w, h, d, .5f, 0, .5f, 1, 1, -w, -h, d, .5f, 0, .5f, 1, 0, -1, 0, 0);
+            // +X
+            AddQuad(w, -h, d, 1, 1, 0, 0, 0, w, h, d, 1, 1, 0, 0, 1, w, h, -d, 1, 1, 0, 1, 1, w, -h, -d, 1, 1, 0, 1, 0, 1, 0, 0);
+        }
+
+        private void CreateFlade(float width, float height, float depth)
+        {
+            float w = width * 10.0f, h = height * 0.1f, d = depth * 10.0f;
 
             // +Z
             AddQuad(-w, -h, d, 1, 0, 0, 0, 0, -w, h, d, 1, 0, 0, 0, 1, w, h, d, 1, 0, 0, 1, 1, w, -h, d, 1, 0, 0, 1, 0, 0, 0, 1);
@@ -690,7 +628,6 @@ namespace OpenGL
             float dy = height / divY;
             float dz = depth / divX;
 
-            // +X face (Right)
             for (int j = 0; j < divY; j++)
             {
                 for (int k = 0; k < divX; k++)
@@ -705,8 +642,6 @@ namespace OpenGL
                         1, 0, 0);
                 }
             }
-
-            // -X face (Left)
             for (int j = 0; j < divY; j++)
             {
                 for (int k = 0; k < divX; k++)
@@ -721,8 +656,6 @@ namespace OpenGL
                         -1, 0, 0);
                 }
             }
-
-            // +Y face (Top)
             for (int i = 0; i < divX; i++)
             {
                 for (int k = 0; k < divX; k++)
@@ -737,8 +670,6 @@ namespace OpenGL
                         0, 1, 0);
                 }
             }
-
-            // -Y face (Bottom)
             for (int i = 0; i < divX; i++)
             {
                 for (int k = 0; k < divX; k++)
@@ -753,8 +684,6 @@ namespace OpenGL
                         0, -1, 0);
                 }
             }
-
-            // +Z face (Front)
             for (int i = 0; i < divX; i++)
             {
                 for (int j = 0; j < divY; j++)
@@ -769,8 +698,6 @@ namespace OpenGL
                         0, 0, 1);
                 }
             }
-
-            // -Z face (Back)
             for (int i = 0; i < divX; i++)
             {
                 for (int j = 0; j < divY; j++)
@@ -785,8 +712,8 @@ namespace OpenGL
                         0, 0, -1);
                 }
             }
-
         }
+
 
         private void CreateCylinder(float radius, float height, int segments)
         {
@@ -826,22 +753,55 @@ namespace OpenGL
             }
         }
 
-        #endregion
 
-        private static Vector3 Normalize(float x, float y, float z)
+        //lyskilden - fra scratch (undersøg forbedringsmuligheder)
+        private List<float> verticesLight = new List<float>();
+        private int lightVertexCount = 0;
+        private void CreateLightMarker(float size)
         {
-            float len = MathF.Sqrt(x * x + y * y + z * z);
-            if (len <= 1e-6f) return Vector3.Zero;
-            return new Vector3(x / len, y / len, z / len);
+            verticesLight.Clear();
+
+            float w = size * 0.5f, h = w, d = w;
+            float r = 1f, g = 1f, b = 0f;
+
+            void AddTri(float ax, float ay, float az, float ar, float ag, float ab, float au, float av,
+                        float bx, float by, float bz, float br, float bg, float bb, float bu, float bv,
+                        float cx, float cy, float cz, float cr, float cg, float cb, float cu, float cv,
+                        float nx, float ny, float nz)
+            {
+                verticesLight.AddRange(new[] { ax, ay, az, ar, ag, ab, au, av, nx, ny, nz });
+                verticesLight.AddRange(new[] { bx, by, bz, br, bg, bb, bu, bv, nx, ny, nz });
+                verticesLight.AddRange(new[] { cx, cy, cz, cr, cg, cb, cu, cv, nx, ny, nz });
+            }
+
+            void AddQuad(float x1, float y1, float z1, float x2, float y2, float z2,
+                         float x3, float y3, float z3, float x4, float y4, float z4,
+                         float nx, float ny, float nz)
+            {
+                AddTri(x1, y1, z1, r, g, b, 0, 0, x3, y3, z3, r, g, b, 1, 1, x2, y2, z2, r, g, b, 1, 0, nx, ny, nz);
+                AddTri(x1, y1, z1, r, g, b, 0, 0, x4, y4, z4, r, g, b, 0, 1, x3, y3, z3, r, g, b, 1, 1, nx, ny, nz);
+            }
+
+            AddQuad(-w, -h, d, -w, h, d, w, h, d, w, -h, d, 0, 0, 1);
+            AddQuad(w, -h, -d, w, h, -d, -w, h, -d, -w, -h, -d, 0, 0, -1);
+            AddQuad(-w, h, d, -w, h, -d, w, h, -d, w, h, d, 0, 1, 0);
+            AddQuad(-w, -h, -d, -w, -h, d, w, -h, d, w, -h, -d, 0, -1, 0);
+            AddQuad(-w, -h, -d, -w, h, -d, -w, h, d, -w, -h, d, -1, 0, 0);
+            AddQuad(w, -h, d, w, h, d, w, h, -d, w, -h, -d, 1, 0, 0);
+
+            lightVertexCount = verticesLight.Count / 11;
         }
 
 
+        #endregion
+
+        
 
         #region grid og pynt
-        //grid og pynt
         private void AddGridLine(float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b)
         {
             _activeGround = true;
+            //UV og normal fyldes med dummy (UV=0, normal=(0,1,0))
             active.AddRange(new[] { x1, y1, z1, r, g, b, 0, 0, 0, 1, 0 });
             active.AddRange(new[] { x2, y2, z2, r, g, b, 0, 0, 0, 1, 0 });
             _activeGround = false;
@@ -920,43 +880,33 @@ namespace OpenGL
         #endregion
 
 
-        public void SetScale(float sx, float sy, float sz)
-        {
-            Scale = new Vector3(sx, sy, sz);
-        }
+        //setters
+        private Vector3 _translation = Vector3.Zero;
 
         public void SetTranslation(float tx, float ty, float tz)
         {
-            Model = Matrix4.CreateTranslation(tx, ty, tz);
+            _translation = new Vector3(tx, ty, tz);
+            UpdateModelMatrix();
+            UploadView();
+            glControl1.Invalidate();
         }
-
+        public void SetScale(float sx, float sy, float sz)
+        {
+            Scale = new Vector3(sx, sy, sz);
+            UpdateModelMatrix();
+        }
         public void SetAngles(float ax, float ay, float az)
         {
             Angle = new Vector4(ax, ay, az, 1);
+            UpdateModelMatrix();
         }
 
-        public void SetTwist(float val) 
-        { 
-            TwistAmount = val; 
-            GL.Uniform1(uTwist, TwistAmount); 
+        //helpers 
+        private static Vector3 Normalize(float x, float y, float z)
+        {
+            float len = MathF.Sqrt(x * x + y * y + z * z);
+            if (len <= 1e-6f) return Vector3.Zero;
+            return new Vector3(x / len, y / len, z / len);
         }
-
-        public void SetBend(float val) 
-        { 
-            BendAmount = val; 
-            GL.Uniform1(uBend, BendAmount); 
-        }
-
-        public void SetBulge(float val) 
-        { 
-            BulgeAmount = val; 
-            GL.Uniform1(uBulge, BulgeAmount); 
-        }
-
-        public void SetDisplay(float r, float g, float b, float mix) 
-        { 
-            Display = new Vector4(r, g, b, mix); 
-        }
-
     }
 }
