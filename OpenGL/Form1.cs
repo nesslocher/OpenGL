@@ -23,17 +23,76 @@ namespace OpenGL
             uniform mat4 View;
             uniform mat4 Model;
 
+//modifiers 
+            uniform bool  UseModifiers;
+            uniform float TwistAmt;
+            uniform float BulgeAmt;      //styrke
+            uniform float BulgeRadius;   //hvor langt fra centrum
+            uniform vec2  ShearXZ;       //Y
+            uniform vec3  DeformCenter; 
+
             out vec3 vertexColor;
             out vec3 vNormal;
             out vec3 vWorldPos;
 
+//deformation functions (modifiers)
+            vec3 deformPos(vec3 p)
+            {
+                if (!UseModifiers) return p;
+
+                vec3 q = p - DeformCenter;
+
+                q.x += ShearXZ.x * q.y;
+                q.z += ShearXZ.y * q.y;
+
+
+                float ang = TwistAmt * q.y;
+                float c = cos(ang), s = sin(ang);
+                vec2 xz = vec2(c*q.x - s*q.z, s*q.x + c*q.z);
+                q.x = xz.x; q.z = xz.y;
+
+
+                float r = length(q);
+                if (BulgeRadius > 0.0)
+                {
+                    float t = clamp(1.0 - r / BulgeRadius, 0.0, 1.0);
+                    float sBulge = 1.0 + BulgeAmt * t;                 
+                    q *= sBulge;
+                }
+
+                return q + DeformCenter;
+            }
+
+            vec3 deformNormal(vec3 p, vec3 originalNormal) {
+                const float e = 0.001;
+
+                vec3 p0 = deformPos(p);
+                vec3 px = deformPos(p + vec3(e, 0, 0));
+                vec3 py = deformPos(p + vec3(0, e, 0));
+
+                vec3 dx = px - p0;
+                vec3 dy = py - p0;
+
+                vec3 n = normalize(cross(dx, dy));
+
+                if (dot(n, originalNormal) < 0.0)
+                    n = -n;
+
+                return n;
+            }
+
             void main() {
-                vec4 worldPos = Model * vec4(Pos, 1.0);
+
+                vec3 pDef = deformPos(Pos);
+                vec3 nDef = deformNormal(Pos, Normal);
+
+
+                vec4 worldPos = Model * vec4(pDef, 1.0);
                 vWorldPos = worldPos.xyz;
 
-//normal i world space
                 mat3 normalMatrix = transpose(inverse(mat3(Model)));
                 vNormal = normalize(normalMatrix * Normal);
+
 
                 gl_Position = Projection * View * worldPos;
 
@@ -93,6 +152,8 @@ namespace OpenGL
         private int _vao, _vbo;
 
         private int uProjection, uModel, uView, uIsGrid, uLightColor;
+        private int uUseModifiers, uTwistAmt, uBulgeAmt, uBulgeRadius, uShearXZ, uDeformCenter;
+        private int uLightPos, uShiny, uSpecCol, uViewPos;
 
         private readonly List<float> verticesModel = new List<float>();
         private readonly List<float> verticesGround = new List<float>();
@@ -123,7 +184,7 @@ namespace OpenGL
         private ShapeType _activeShape = ShapeType.Triangle;
 
         //UI controls
-        private TrackBar _tbTwist, _tbBend, _tbBulge;
+        private TrackBar tbTwist, tbBulge, tbBulgeR, tbShearX, tbShearZ;
         private Label _lblTwist, _lblBend, _lblBulge;
         private CheckBox _chkGrid;
 
@@ -146,20 +207,36 @@ namespace OpenGL
             glControl1.MouseMove += GlControl1_MouseMove;
             glControl1.MouseWheel += GlControl1_MouseWheel;
 
-            //UI panel til modifiers
-            var panel = new Panel
+
+
+
+
+
+            var modifierPanel = new Panel
             {
-                Width = 260,
                 Dock = DockStyle.Right,
-                BackColor = Color.FromArgb(30, 30, 30)
+                Width = 300,
+                BackColor = Color.FromArgb(10, 10, 30)
             };
-            this.Controls.Add(panel);
-            panel.BringToFront();
+            modifierPanel.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+
+                using (var bgBrush = new SolidBrush(modifierPanel.BackColor))
+                    g.FillRectangle(bgBrush, modifierPanel.ClientRectangle);
+
+                using var pen = new Pen(Color.Cyan, 4);
+                g.DrawRectangle(pen, 0, 0, modifierPanel.Width - 1, modifierPanel.Height - 1);
+            };
+
+            this.Controls.Add(modifierPanel);
+            this.Controls.Add(modifierPanel);
+            modifierPanel.BringToFront();
 
             Label MakeLbl(string text, int top)
             {
                 var l = new Label { Text = text, Left = 12, Top = top, Width = 220, ForeColor = Color.LightBlue, BackColor = Color.Transparent };
-                panel.Controls.Add(l);
+                modifierPanel.Controls.Add(l);
                 return l;
             }
             TrackBar MakeTb(int top, int min, int max, int value)
@@ -168,16 +245,15 @@ namespace OpenGL
                 {
                     Left = 12,
                     Top = top,
-                    Width = panel.Width - 24,
+                    Width = modifierPanel.Width - 24,
                     Minimum = min,
                     Maximum = max,
                     TickFrequency = Math.Max(1, (max - min) / 10),
                     Value = value
                 };
-                panel.Controls.Add(tb);
+                modifierPanel.Controls.Add(tb);
                 return tb;
             }
-
             int y = 20;
 
             //figurvælger
@@ -189,7 +265,9 @@ namespace OpenGL
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Left = 12,
                 Top = y,
-                Width = panel.Width - 24
+                Width = modifierPanel.Width - 24,
+                BackColor = Color.MediumVioletRed,
+                
             };
             shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade" });
             shapeCombo.SelectedIndex = (int)_activeShape;
@@ -199,7 +277,7 @@ namespace OpenGL
                 RebuildModelAndUpload();
                 glControl1.Invalidate();
             };
-            panel.Controls.Add(shapeCombo);
+            modifierPanel.Controls.Add(shapeCombo);
 
             y += 40;
 
@@ -215,7 +293,7 @@ namespace OpenGL
                 AutoSize = true
             };
             _chkGrid.CheckedChanged += (s, e) => { _showGrid = _chkGrid.Checked; glControl1.Invalidate(); };
-            panel.Controls.Add(_chkGrid);
+            modifierPanel.Controls.Add(_chkGrid);
             y += 32;
 
             _chkSpecular = new CheckBox
@@ -234,8 +312,74 @@ namespace OpenGL
                 if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular.Checked ? 1 : 0);
                 glControl1.Invalidate();
             };
-            panel.Controls.Add(_chkSpecular);
+            modifierPanel.Controls.Add(_chkSpecular);
             y += 32;
+            y += 8;
+            MakeLbl("Twist (deg per Y-unit):", y); y += 20;
+            tbTwist = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = -360, Maximum = 360, TickFrequency = 60, Value = 0 };
+            tbTwist.Scroll += (s, e) => {
+                float degPerUnit = tbTwist.Value;
+                float radPerUnit = MathHelper.DegreesToRadians(degPerUnit);
+                if (uTwistAmt >= 0) { glControl1.MakeCurrent(); GL.Uniform1(uTwistAmt, radPerUnit); glControl1.Invalidate(); }
+            };
+            modifierPanel.Controls.Add(tbTwist); y += 50;
+
+            MakeLbl("Bulge amount (-100..300):", y); y += 20;
+            tbBulge = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = -100, Maximum = 300, TickFrequency = 20, Value = 0 };
+            tbBulge.Scroll += (s, e) => {
+                float amt = tbBulge.Value / 100f;
+                if (uBulgeAmt >= 0) { glControl1.MakeCurrent(); GL.Uniform1(uBulgeAmt, amt); glControl1.Invalidate(); }
+            };
+            modifierPanel.Controls.Add(tbBulge); y += 50;
+
+            MakeLbl("Bulge radius (10..500%):", y); y += 20;
+            tbBulgeR = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = 10, Maximum = 500, TickFrequency = 10, Value = 100 };
+            tbBulgeR.Scroll += (s, e) => {
+                float r = tbBulgeR.Value / 100f;
+                if (uBulgeRadius >= 0) { glControl1.MakeCurrent(); GL.Uniform1(uBulgeRadius, r); glControl1.Invalidate(); }
+            };
+            modifierPanel.Controls.Add(tbBulgeR); y += 50;
+
+            MakeLbl("Shear X (-100..100):", y); y += 20;
+            tbShearX = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = -100, Maximum = 100, TickFrequency = 20, Value = 0 };
+            modifierPanel.Controls.Add(tbShearX); y += 50;
+
+            MakeLbl("Shear Z (-100..100):", y); y += 20;
+            tbShearZ = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = -100, Maximum = 100, TickFrequency = 20, Value = 0 };
+            modifierPanel.Controls.Add(tbShearZ); y += 50;
+
+            EventHandler shearUpdate = (s, e) => {
+                float sx = tbShearX.Value / 100f;
+                float sz = tbShearZ.Value / 100f;
+                if (uShearXZ >= 0) { glControl1.MakeCurrent(); GL.Uniform2(uShearXZ, sx, sz); glControl1.Invalidate(); }
+            };
+            tbShearX.Scroll += shearUpdate;
+            tbShearZ.Scroll += shearUpdate;
+
+            var chkMods = new CheckBox { Text = "Use modifiers", Left = 12, Top = y, ForeColor = Color.White, BackColor = Color.Transparent, Checked = true, AutoSize = true };
+            chkMods.CheckedChanged += (s, e) => {
+                if (uUseModifiers >= 0) { glControl1.MakeCurrent(); GL.Uniform1(uUseModifiers, chkMods.Checked ? 1 : 0); glControl1.Invalidate(); }
+            };
+            modifierPanel.Controls.Add(chkMods); y += 28;
+            var btnReset = new Button
+            {
+                Text = "Reset Modifiers",
+                Left = 12,
+                Top = y,
+                Width = modifierPanel.Width - 24,
+                Height = 30,
+                BackColor = Color.DarkSlateGray,
+                ForeColor = Color.White
+            };
+            modifierPanel.Controls.Add(btnReset);
+            btnReset.Click += (s, e) => ResetModifiers();
+            y += 40;
+
+ 
+            this.Resize += (s, e) => {
+                glControl1.Invalidate();
+                modifierPanel.Invalidate();//Tving redraw af panel
+            };
 
         }
 
@@ -244,41 +388,52 @@ namespace OpenGL
         {
             glControl1.MakeCurrent();
 
-            GL.ClearColor(0.3f, 0.3f, 0.6f, 1.0f);
+            GL.ClearColor(0.5f, 0.3f, 0.6f, 1.0f);
             GL.Enable(EnableCap.DepthTest);
             GL.Enable(EnableCap.CullFace);
 
             _program = BuildProgram(VertexSrc, FragmentSrc);
             GL.UseProgram(_program);
 
-            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular?.Checked == true ? 1 : 0);
             uUseSpecular = GL.GetUniformLocation(_program, "UseSpecular");
-            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, 1);
-
-            int uLightPos = GL.GetUniformLocation(_program, "LightPos");
-            int uShiny = GL.GetUniformLocation(_program, "shininess");
-            int uSpecCol = GL.GetUniformLocation(_program, "SpecularColor");
-            uLightColor = GL.GetUniformLocation(_program, "LightColor");
-
-            
-            if (uLightPos >= 0) GL.Uniform3(uLightPos, new Vector3(0f, 3f, 3f)); 
-            if (uShiny >= 0) GL.Uniform1(uShiny, 32f);
-            if (uSpecCol >= 0) GL.Uniform3(uSpecCol, new Vector3(1f, 1f, 1f));
-            if (uLightColor >= 0) GL.Uniform3(uLightColor, new Vector3(1f, 1f, 1f)); 
-
             uProjection = GL.GetUniformLocation(_program, "Projection");
             uModel = GL.GetUniformLocation(_program, "Model");
             uView = GL.GetUniformLocation(_program, "View");
             uIsGrid = GL.GetUniformLocation(_program, "IsGrid");
+            uLightColor = GL.GetUniformLocation(_program, "LightColor");
 
+            uUseModifiers = GL.GetUniformLocation(_program, "UseModifiers");
+            uTwistAmt = GL.GetUniformLocation(_program, "TwistAmt");
+            uBulgeAmt = GL.GetUniformLocation(_program, "BulgeAmt");
+            uBulgeRadius = GL.GetUniformLocation(_program, "BulgeRadius");
+            uShearXZ = GL.GetUniformLocation(_program, "ShearXZ");
+            uDeformCenter = GL.GetUniformLocation(_program, "DeformCenter");
+
+            uLightPos = GL.GetUniformLocation(_program, "LightPos");
+            uShiny = GL.GetUniformLocation(_program, "shininess");
+            uSpecCol = GL.GetUniformLocation(_program, "SpecularColor");
+            uViewPos = GL.GetUniformLocation(_program, "ViewPos");
+
+            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular.Checked ? 1 : 0);
+            if (uUseModifiers >= 0) GL.Uniform1(uUseModifiers, 1);
+            if (uTwistAmt >= 0) GL.Uniform1(uTwistAmt, 0.0f);
+            if (uBulgeAmt >= 0) GL.Uniform1(uBulgeAmt, 0.0f);
+            if (uBulgeRadius >= 0) GL.Uniform1(uBulgeRadius, 1.0f);
+            if (uShearXZ >= 0) GL.Uniform2(uShearXZ, 0.0f, 0.0f);
+            if (uDeformCenter >= 0) GL.Uniform3(uDeformCenter, 0.0f, 0.0f, 0.0f);
+
+            if (uLightPos >= 0) GL.Uniform3(uLightPos, _lightPos);
+            if (uShiny >= 0) GL.Uniform1(uShiny, 32.0f);
+            if (uSpecCol >= 0) GL.Uniform3(uSpecCol, 1.0f, 1.0f, 1.0f);
+            if (uLightColor >= 0) GL.Uniform3(uLightColor, 1.0f, 1.0f, 1.0f);
 
             Model = Matrix4.Identity;
             GL.UniformMatrix4(uModel, false, ref Model);
             UploadProjection();
 
-
             _distance = -5f;
-            _yaw = 0f; _pitch = 0f;
+            _yaw = 0f;
+            _pitch = 0f;
             UploadView();
 
             Scale = Vector3.One;
@@ -291,14 +446,15 @@ namespace OpenGL
 
             //grid + pynt
             CreateGroundGrid(width: 100, depth: 100, divX: 100, divZ: 100, yOffset: -1f);
-            CreateMountainGrid(-0f, -0.4f, -40f, 35f, 30f, 30, 20, new float[] { 1f, 0f, 1f });
-            CreateMountainGrid(-10f, -0.6f, -40f, 15f, 10f, 20, 10, new float[] { 1f, 1f, 0f });
-            CreateMountainGrid(20f, -0.5f, -40f, 28f, 22f, 20, 20, new float[] { 0f, 1f, 1f });
-            CreateSynthwaveSun(0.0f, -0.6f, -40.0f, 10f, 70, new float[] { 0.7f, 0.0f, 0.0f }, new float[] { 1.0f, 1.0f, 0.0f });
+            //CreateMountainGrid(-0f, -0.4f, -40f, 35f, 30f, 30, 20, new float[] { 1f, 0f, 1f });
+            //CreateMountainGrid(-10f, -0.6f, -40f, 15f, 10f, 20, 10, new float[] { 1f, 1f, 0f });
+            //CreateMountainGrid(20f, -0.5f, -40f, 28f, 22f, 20, 20, new float[] { 0f, 1f, 1f });
+            //CreateSynthwaveSun(0.0f, -0.6f, -40.0f, 10f, 70,
+            //    new float[] { 0.7f, 0.0f, 0.0f },
+            //    new float[] { 1.0f, 1.0f, 0.0f });
 
-            //model
+            //model og lyskilde
             CreateTriangle(1.0f, 1.0f, 1.0f);
-
             CreateLightMarker(1.0f);
 
             groundVertexCount = verticesGround.Count / 11;
@@ -321,7 +477,7 @@ namespace OpenGL
             GL.EnableVertexAttribArray(1); //color
             GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, STRIDE, 3 * sizeof(float));
 
-            GL.EnableVertexAttribArray(2); //uv (ikke brugt, men bevares i layout)
+            GL.EnableVertexAttribArray(2);
             GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, STRIDE, 6 * sizeof(float));
 
             GL.EnableVertexAttribArray(3); //normal
@@ -349,19 +505,24 @@ namespace OpenGL
             {
                 GL.DepthMask(false);
                 GL.Uniform1(uIsGrid, 1);
+                GL.Uniform1(uUseModifiers, 0); 
                 var I = Matrix4.Identity;
                 GL.UniformMatrix4(uModel, false, ref I);
                 GL.DrawArrays(PrimitiveType.Lines, 0, groundVertexCount);
                 GL.DepthMask(true);
             }
 
-            //model
+            //tegn model
             GL.Uniform1(uIsGrid, 0);
+            GL.Uniform1(uUseModifiers, 1);
             GL.UniformMatrix4(uModel, false, ref Model);
+            GL.DrawArrays(PrimitiveType.Triangles, groundVertexCount, modelVertexCount);
 
+            //tegn lyskilde
             if (lightVertexCount > 0)
             {
-                GL.Uniform1(uIsGrid, 1); 
+                GL.Uniform1(uIsGrid, 1);
+                GL.Uniform1(uUseModifiers, 0);
                 var markerModel = Matrix4.CreateScale(0.1f) * Matrix4.CreateTranslation(_lightPos);
                 GL.UniformMatrix4(uModel, false, ref markerModel);
 
@@ -371,9 +532,6 @@ namespace OpenGL
                 GL.Uniform1(uIsGrid, 0);
                 GL.UniformMatrix4(uModel, false, ref Model);
             }
-
-            if (modelVertexCount > 0)
-                GL.DrawArrays(PrimitiveType.Triangles, groundVertexCount, modelVertexCount);
 
             GL.BindVertexArray(0);
             glControl1.SwapBuffers();
@@ -411,28 +569,13 @@ namespace OpenGL
             var up = Vector3.UnitY;
 
             View = Matrix4.LookAt(eye, target, up);
+
+            GL.UseProgram(_program);   
             GL.UniformMatrix4(uView, false, ref View);
 
-            int uViewPos = GL.GetUniformLocation(_program, "ViewPos");
-            if (uViewPos >= 0) GL.Uniform3(uViewPos, eye);
+            if (uViewPos >= 0) GL.Uniform3(uViewPos, eye); 
         }
 
-        private void UploadProjection()
-        {
-            float fov = MathHelper.DegreesToRadians(45f);
-            float aspect = Math.Max(1, glControl1.Width) / (float)Math.Max(1, glControl1.Height);
-            Projection = Matrix4.CreatePerspectiveFieldOfView(fov, aspect, 0.1f, 100f);
-            GL.UniformMatrix4(uProjection, false, ref Projection);
-        }
-
-        //modifiers - når vi får sat modifiers ind i projektet
-        private void OnModifiersChanged(object sender, EventArgs e)
-        {
-
-            glControl1.MakeCurrent();
-
-            glControl1.Invalidate();
-        }
 
         #region Mouse interaction
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -446,10 +589,11 @@ namespace OpenGL
                 case Keys.D: _translation.X += step; break;
                 case Keys.Q: _translation.Y -= step; break;
                 case Keys.E: _translation.Y += step; break;
-                case Keys.Left: Angle.Y -= 0.05f; break;
-                case Keys.Right: Angle.Y += 0.05f; break;
-                case Keys.Up: Angle.X -= 0.05f; break;
-                case Keys.Down: Angle.X += 0.05f; break;
+                //sørg for at sætte en timer ind på et tidspunkt, så rotation sker jævnt og ikke per tastetryk
+                case Keys.Left: Angle.Y -= 0.1f; break;
+                case Keys.Right: Angle.Y += 0.1f; break;
+                case Keys.Up: Angle.X -= 0.1f; break;
+                case Keys.Down: Angle.X += 0.1f; break;
                 case Keys.PageUp: Scale *= 1.05f; break;
                 case Keys.PageDown: Scale *= 0.95f; break;
                 default: return base.ProcessCmdKey(ref msg, keyData);
@@ -459,7 +603,6 @@ namespace OpenGL
             glControl1.Invalidate();
             return true;
         }
-
         private void GlControl1_MouseDown(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
@@ -468,13 +611,11 @@ namespace OpenGL
                 _lastMouse = e.Location;
             }
         }
-
         private void GlControl1_MouseUp(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
                 _dragging = false;
         }
-
         private void GlControl1_MouseMove(object sender, MouseEventArgs e)
         {
             if (!_dragging) return;
@@ -491,7 +632,6 @@ namespace OpenGL
             UploadView();
             glControl1.Invalidate();
         }
-
         private void GlControl1_MouseWheel(object sender, MouseEventArgs e)
         {
             float step = 0.5f * (e.Delta / 120f);
@@ -945,6 +1085,32 @@ namespace OpenGL
             float len = MathF.Sqrt(x * x + y * y + z * z);
             if (len <= 1e-6f) return Vector3.Zero;
             return new Vector3(x / len, y / len, z / len);
+        }
+
+        private void UploadProjection()
+        {
+            float fov = MathHelper.DegreesToRadians(45f);
+            float aspect = Math.Max(1, glControl1.Width) / (float)Math.Max(1, glControl1.Height);
+            Projection = Matrix4.CreatePerspectiveFieldOfView(fov, aspect, 0.1f, 100f);
+            GL.UniformMatrix4(uProjection, false, ref Projection);
+        }
+
+        private void ResetModifiers()
+        {
+            glControl1.MakeCurrent();
+
+            if (uTwistAmt >= 0) GL.Uniform1(uTwistAmt, 0.0f);
+            if (uBulgeAmt >= 0) GL.Uniform1(uBulgeAmt, 0.0f);
+            if (uBulgeRadius >= 0) GL.Uniform1(uBulgeRadius, 1.0f);
+            if (uShearXZ >= 0) GL.Uniform2(uShearXZ, 0.0f, 0.0f);
+
+            tbTwist.Value = 0;
+            tbBulge.Value = 0;
+            tbBulgeR.Value = 100;
+            tbShearX.Value = 0;
+            tbShearZ.Value = 0;
+
+            glControl1.Invalidate();
         }
     }
 }
