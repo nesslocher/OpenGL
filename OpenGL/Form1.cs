@@ -102,14 +102,16 @@ namespace OpenGL
         private const string FragmentSrc =
             @"#version 330 core
 
-            uniform bool  IsGrid;
+            uniform bool IsGrid;
             uniform bool UseSpecular;
+            uniform bool UseCelShading;
+            uniform bool UseCartoonCelShading;
 
-            uniform vec3  LightPos;
-            uniform vec3  ViewPos;
+            uniform vec3 LightPos;
+            uniform vec3 ViewPos;
             uniform float shininess;
-            uniform vec3  SpecularColor;
-            uniform vec3  LightColor;
+            uniform vec3 SpecularColor;
+            uniform vec3 LightColor;
 
             in vec3 vertexColor;
             in vec3 vWorldPos;
@@ -125,24 +127,41 @@ namespace OpenGL
                 }
 
                 vec3 N = normalize(vNormal);
-                vec3 L = normalize(LightPos - vWorldPos); //fra overflade til lyskilde
-                vec3 V = normalize(ViewPos - vWorldPos); //fra overflade til kamera
+                vec3 L = normalize(LightPos - vWorldPos);
+                vec3 V = normalize(ViewPos - vWorldPos);
 
-                float NdotL = max(dot(N, L), 0.0); //hvor meget af lyset der rammer overfladen
-
-                vec3 diffuse = NdotL * vertexColor;
-                vec3 ambient = 0.1 * vertexColor;
-
-                float specStrength = 0.0;
-                if (UseSpecular && NdotL > 0.0) {
-                    vec3 H = normalize(L + V);
-                    float NdotH = max(dot(N, H), 0.0);
-                    specStrength = pow(NdotH, shininess);
+                if (UseCartoonCelShading) {
+                    float angle = dot(N, V);
+                    if (angle < 0.3) {
+                        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                        return;
+                    }
                 }
-                vec3 specular = SpecularColor * specStrength;
+                
+                float NdotL = max(dot(N, L), 0.0);
+                    
+                vec3 color;
+                
+                if (UseCelShading || UseCartoonCelShading) {
+                    float levels = 3.0;
+                    float intensity = floor(NdotL * levels) / (levels - 1.0);
+                    vec3 diffuse = intensity * vertexColor;
+                    vec3 ambient = 0.2 * vertexColor;
+                    color = LightColor * (ambient + diffuse);
+                } else {
+                    vec3 diffuse = NdotL * vertexColor;
+                    vec3 ambient = 0.1 * vertexColor;
 
-                vec3 color = LightColor * (ambient + diffuse + specular);
+                    float specStrength = 0.0;
+                    if (UseSpecular && NdotL > 0.0) {
+                        vec3 H = normalize(L + V);
+                        float NdotH = max(dot(N, H), 0.0);
+                        specStrength = pow(NdotH, shininess);
+                    }
+                    vec3 specular = SpecularColor * specStrength;
 
+                    color = LightColor * (ambient + diffuse + specular);
+                }
 
                 FragColor = vec4(color, 1.0);
             }";
@@ -154,6 +173,8 @@ namespace OpenGL
         private int uProjection, uModel, uView, uIsGrid, uLightColor;
         private int uUseModifiers, uTwistAmt, uBulgeAmt, uBulgeRadius, uShearXZ, uDeformCenter;
         private int uLightPos, uShiny, uSpecCol, uViewPos;
+
+        private int uUseCelShading, uUseCartoonCelShading;
 
         private readonly List<float> verticesModel = new List<float>();
         private readonly List<float> verticesGround = new List<float>();
@@ -191,6 +212,9 @@ namespace OpenGL
         private int uUseSpecular;
         private CheckBox _chkSpecular;
 
+        private CheckBox _CelShading;
+        private CheckBox _chkCartoonCelShading;
+
         public Form1()
         {
             InitializeComponent();
@@ -206,10 +230,6 @@ namespace OpenGL
             glControl1.MouseUp += GlControl1_MouseUp;
             glControl1.MouseMove += GlControl1_MouseMove;
             glControl1.MouseWheel += GlControl1_MouseWheel;
-
-
-
-
 
 
             var modifierPanel = new Panel
@@ -267,7 +287,7 @@ namespace OpenGL
                 Top = y,
                 Width = modifierPanel.Width - 24,
                 BackColor = Color.MediumVioletRed,
-                
+
             };
             shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade" });
             shapeCombo.SelectedIndex = (int)_activeShape;
@@ -280,6 +300,60 @@ namespace OpenGL
             modifierPanel.Controls.Add(shapeCombo);
 
             y += 40;
+
+            var _CelShading = new CheckBox
+            {
+                Text = "Use Cel Shading",
+                Left = 12,
+                Top = y,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Checked = false,
+                AutoSize = true
+            };
+            _CelShading.CheckedChanged += (s, e) =>
+            {
+                glControl1.MakeCurrent();
+                if (uUseCelShading >= 0) GL.Uniform1(uUseCelShading, _CelShading.Checked ? 1 : 0);
+                glControl1.Invalidate();
+            };
+            modifierPanel.Controls.Add(_CelShading);
+            y += 32;
+
+            _chkCartoonCelShading = new CheckBox // Navn er ændret her
+            {
+                Text = "Cartoon Cel-Shading",
+                Left = 12,
+                Top = y,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Checked = false,
+                AutoSize = true
+            };
+            _chkCartoonCelShading.CheckedChanged += (s, e) => // Navn er ændret her
+            {
+                glControl1.MakeCurrent();
+                if (uUseCartoonCelShading >= 0) GL.Uniform1(uUseCartoonCelShading, _chkCartoonCelShading.Checked ? 1 : 0);
+                glControl1.Invalidate();
+            };
+            modifierPanel.Controls.Add(_chkCartoonCelShading); // Navn er ændret her
+            y += 32;
+
+            //grid checkbox + reset
+            _chkGrid = new CheckBox
+            {
+                Text = "Show grid",
+                Left = 12,
+                Top = y,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Checked = _showGrid,
+                AutoSize = true
+            };
+            _chkGrid.CheckedChanged += (s, e) => { _showGrid = _chkGrid.Checked; glControl1.Invalidate(); };
+            modifierPanel.Controls.Add(_chkGrid);
+            y += 32;
+
 
             //grid checkbox + reset
             _chkGrid = new CheckBox
@@ -375,7 +449,7 @@ namespace OpenGL
             btnReset.Click += (s, e) => ResetModifiers();
             y += 40;
 
- 
+
             this.Resize += (s, e) => {
                 glControl1.Invalidate();
                 modifierPanel.Invalidate();//Tving redraw af panel
@@ -401,6 +475,14 @@ namespace OpenGL
             uView = GL.GetUniformLocation(_program, "View");
             uIsGrid = GL.GetUniformLocation(_program, "IsGrid");
             uLightColor = GL.GetUniformLocation(_program, "LightColor");
+
+            uUseCelShading = GL.GetUniformLocation(_program, "UseCelShading");
+            if (uUseCelShading >= 0)
+                GL.Uniform1(uUseCelShading, 0); // start med cel-shading slået fra
+
+            // Sørg for at initialisere den til 'false' (0) fra start
+            if (uUseCartoonCelShading >= 0)
+                GL.Uniform1(uUseCartoonCelShading, 0);
 
             uUseModifiers = GL.GetUniformLocation(_program, "UseModifiers");
             uTwistAmt = GL.GetUniformLocation(_program, "TwistAmt");
@@ -505,7 +587,7 @@ namespace OpenGL
             {
                 GL.DepthMask(false);
                 GL.Uniform1(uIsGrid, 1);
-                GL.Uniform1(uUseModifiers, 0); 
+                GL.Uniform1(uUseModifiers, 0);
                 var I = Matrix4.Identity;
                 GL.UniformMatrix4(uModel, false, ref I);
                 GL.DrawArrays(PrimitiveType.Lines, 0, groundVertexCount);
@@ -550,7 +632,7 @@ namespace OpenGL
             var R = Matrix4.CreateFromQuaternion(q);
             var T = Matrix4.CreateTranslation(_translation);
 
-            Model = S * R * T; 
+            Model = S * R * T;
 
             GL.UniformMatrix4(uModel, false, ref Model);
             GL.UniformMatrix4(uModel, false, ref Model);
@@ -570,10 +652,10 @@ namespace OpenGL
 
             View = Matrix4.LookAt(eye, target, up);
 
-            GL.UseProgram(_program);   
+            GL.UseProgram(_program);
             GL.UniformMatrix4(uView, false, ref View);
 
-            if (uViewPos >= 0) GL.Uniform3(uViewPos, eye); 
+            if (uViewPos >= 0) GL.Uniform3(uViewPos, eye);
         }
 
 
@@ -973,7 +1055,7 @@ namespace OpenGL
 
         #endregion
 
-        
+
 
         #region grid og pynt
         private void AddGridLine(float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b)
