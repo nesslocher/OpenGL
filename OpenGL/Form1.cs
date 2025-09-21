@@ -26,10 +26,12 @@ namespace OpenGL
 //modifiers 
             uniform bool  UseModifiers;
             uniform float TwistAmt;
-            uniform float BulgeAmt;      //styrke
+            uniform float BulgeAmt;      //styrken
             uniform float BulgeRadius;   //hvor langt fra centrum
             uniform vec2  ShearXZ;       //Y
             uniform vec3  DeformCenter; 
+
+            uniform bool IsObj;
 
             out vec3 vertexColor;
             out vec3 vNormal;
@@ -91,8 +93,13 @@ namespace OpenGL
                 vWorldPos = worldPos.xyz;
 
                 mat3 normalMatrix = transpose(inverse(mat3(Model)));
-                vNormal = normalize(normalMatrix * Normal);
+                //vNormal = normalize(normalMatrix * Normal);
 
+                if (UseModifiers && IsObj) {
+                    vNormal = normalize(normalMatrix * nDef);
+                } else {
+                    vNormal = normalize(normalMatrix * Normal);
+                } 
 
                 gl_Position = Projection * View * worldPos;
 
@@ -180,7 +187,7 @@ namespace OpenGL
         private float _pitch = 0f;
         private float _distance = -5f;
 
-        private enum ShapeType { Triangle, Quad, Box, SubdividedBox, Cylinder, Flade }
+        private enum ShapeType { Triangle, Quad, Box, SubdividedBox, Cylinder, Flade, ObjModel }
         private ShapeType _activeShape = ShapeType.Triangle;
 
         //UI controls
@@ -190,6 +197,8 @@ namespace OpenGL
 
         private int uUseSpecular;
         private CheckBox _chkSpecular;
+
+        private int uIsObj;
 
         public Form1()
         {
@@ -206,6 +215,8 @@ namespace OpenGL
             glControl1.MouseUp += GlControl1_MouseUp;
             glControl1.MouseMove += GlControl1_MouseMove;
             glControl1.MouseWheel += GlControl1_MouseWheel;
+
+            //glControl1.VSync = true;
 
 
 
@@ -269,7 +280,7 @@ namespace OpenGL
                 BackColor = Color.MediumVioletRed,
                 
             };
-            shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade" });
+            shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade", "ObjModel" });
             shapeCombo.SelectedIndex = (int)_activeShape;
             shapeCombo.SelectedIndexChanged += (s, e) =>
             {
@@ -355,12 +366,7 @@ namespace OpenGL
             };
             tbShearX.Scroll += shearUpdate;
             tbShearZ.Scroll += shearUpdate;
-
-            var chkMods = new CheckBox { Text = "Use modifiers", Left = 12, Top = y, ForeColor = Color.White, BackColor = Color.Transparent, Checked = true, AutoSize = true };
-            chkMods.CheckedChanged += (s, e) => {
-                if (uUseModifiers >= 0) { glControl1.MakeCurrent(); GL.Uniform1(uUseModifiers, chkMods.Checked ? 1 : 0); glControl1.Invalidate(); }
-            };
-            modifierPanel.Controls.Add(chkMods); y += 28;
+            y += 28;
             var btnReset = new Button
             {
                 Text = "Reset Modifiers",
@@ -413,6 +419,8 @@ namespace OpenGL
             uShiny = GL.GetUniformLocation(_program, "shininess");
             uSpecCol = GL.GetUniformLocation(_program, "SpecularColor");
             uViewPos = GL.GetUniformLocation(_program, "ViewPos");
+
+            uIsObj = GL.GetUniformLocation(_program, "IsObj");
 
             if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular.Checked ? 1 : 0);
             if (uUseModifiers >= 0) GL.Uniform1(uUseModifiers, 1);
@@ -515,6 +523,7 @@ namespace OpenGL
             //tegn model
             GL.Uniform1(uIsGrid, 0);
             GL.Uniform1(uUseModifiers, 1);
+            GL.Uniform1(uIsObj, _activeShape == ShapeType.ObjModel ? 1 : 0);
             GL.UniformMatrix4(uModel, false, ref Model);
             GL.DrawArrays(PrimitiveType.Triangles, groundVertexCount, modelVertexCount);
 
@@ -535,7 +544,6 @@ namespace OpenGL
 
             GL.BindVertexArray(0);
             glControl1.SwapBuffers();
-            glControl1.Invalidate();
         }
         #endregion
 
@@ -691,6 +699,24 @@ namespace OpenGL
                 case ShapeType.Flade:
                     CreateFlade(0.5f, 0.5f, 0.5f);
                     break;
+                case ShapeType.ObjModel:
+                {
+                    var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                    var path = System.IO.Path.Combine(desktop, "OpenGL", "Modeller", "Fly.obj");
+
+                    if (!System.IO.File.Exists(path))
+                    {
+                        MessageBox.Show("OBJ ikke fundet:\n" + path);
+                        break;
+                    }
+
+                    verticesModel.Clear();
+                    LoadObj(path, verticesModel);
+
+                    Scale = new Vector3(0.01f);
+                    UpdateModelMatrix();
+                    break;
+                }
             }
 
             modelVertexCount = verticesModel.Count / 11;
@@ -1112,5 +1138,75 @@ namespace OpenGL
 
             glControl1.Invalidate();
         }
+
+        //obj loader 
+        private void LoadObj(string path, List<float> vertices)
+        {
+            var lines = System.IO.File.ReadAllLines(path);
+            var positions = new List<Vector3>();
+            var normals = new List<Vector3>();
+            var uvs = new List<Vector2>();
+
+            foreach (var line in lines)
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) continue;
+
+                if (parts[0] == "v")
+                {
+                    positions.Add(new Vector3(
+                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture)));
+                }
+                else if (parts[0] == "vn")
+                {
+                    normals.Add(new Vector3(
+                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture)));
+                }
+                else if (parts[0] == "vt")
+                {
+                    uvs.Add(new Vector2(
+                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture)));
+                }
+                else if (parts[0] == "f") //rettet mht at understøtte flere end 3 hjørner
+                {
+                    // Parse alle indekser i face
+                    var faceIndices = new List<(int vi, int ti, int ni)>();
+                    for (int i = 1; i < parts.Length; i++)
+                    {
+                        var idx = parts[i].Split('/');
+                        int vi = int.Parse(idx[0]) - 1;
+                        int ti = (idx.Length > 1 && idx[1] != "") ? int.Parse(idx[1]) - 1 : -1;
+                        int ni = (idx.Length > 2 && idx[2] != "") ? int.Parse(idx[2]) - 1 : -1;
+
+                        faceIndices.Add((vi, ti, ni));
+                    }
+
+                    // Fan triangulation: (0,i,i+1)
+                    for (int i = 1; i + 1 < faceIndices.Count; i++)
+                    {
+                        var triplet = new[] { faceIndices[0], faceIndices[i], faceIndices[i + 1] };
+                        foreach (var (vi, ti, ni) in triplet)
+                        {
+                            var p = positions[vi];
+                            var t = (ti >= 0 && ti < uvs.Count) ? uvs[ti] : Vector2.Zero;
+                            var n = (ni >= 0 && ni < normals.Count) ? normals[ni] : Vector3.UnitY;
+
+                            vertices.AddRange(new float[] {
+                p.X, p.Y, p.Z,
+                1f, 1f, 1f,
+                t.X, t.Y,
+                n.X, n.Y, n.Z
+            });
+                        }
+                    }
+                }
+            }
+        }
+
     }
 }
