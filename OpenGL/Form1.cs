@@ -146,7 +146,7 @@ namespace OpenGL
                     float levels = 3.0;
                     float intensity = floor(NdotL * levels) / (levels - 1.0);
                     vec3 diffuse = intensity * vertexColor;
-                    vec3 ambient = 0.2 * vertexColor;
+                    vec3 ambient = 0.4 * vertexColor;
                     color = LightColor * (ambient + diffuse);
                 } else {
                     vec3 diffuse = NdotL * vertexColor;
