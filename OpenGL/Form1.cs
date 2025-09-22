@@ -13,6 +13,7 @@ namespace OpenGL
     {
         private const string VertexSrc =
             @"#version 330 core
+
             layout (location=0) in vec3 Pos;
             layout (location=1) in vec3 Color;
             layout (location=2) in vec2 UV; 
@@ -29,11 +30,13 @@ namespace OpenGL
             uniform float BulgeRadius;
             uniform vec2  ShearXZ;
             uniform vec3  DeformCenter; 
+
             uniform bool IsObj;
 
             out vec3 vertexColor;
             out vec3 vNormal;
             out vec3 vWorldPos;
+            out vec2 texCoord;
 
             vec3 deformPos(vec3 p)
             {
@@ -87,12 +90,16 @@ namespace OpenGL
                 } 
 
                 gl_Position = Projection * View * worldPos;
+
                 vertexColor = Color;
+                texCoord = UV;
             }";
 
         private const string FragmentSrc =
             @"#version 330 core
+
             uniform bool IsGrid;
+            uniform bool UseTexture;
             uniform bool UseSpecular;
             uniform bool UseCelShading;
             uniform bool UseCartoonCelShading;
@@ -103,9 +110,12 @@ namespace OpenGL
             uniform vec3 SpecularColor;
             uniform vec3 LightColor;
 
+            uniform sampler2D texture1;
+
             in vec3 vertexColor;
             in vec3 vWorldPos;
             in vec3 vNormal;
+            in vec2 texCoord;
 
             out vec4 FragColor;
 
@@ -113,6 +123,12 @@ namespace OpenGL
                 if (IsGrid) {
                     FragColor = vec4(vertexColor, 1.0);
                     return;
+                }
+
+                vec3 baseColor = vertexColor; 
+
+                if (UseTexture) {
+                   baseColor = texture(texture1, texCoord).rgb; 
                 }
 
                 vec3 N = normalize(vNormal);
@@ -130,15 +146,16 @@ namespace OpenGL
                 float NdotL = max(dot(N, L), 0.0);
                 vec3 color;
                 
+
                 if (UseCelShading || UseCartoonCelShading) {
                     float levels = 3.0;
                     float intensity = floor(NdotL * levels) / (levels - 1.0);
-                    vec3 diffuse = intensity * vertexColor;
-                    vec3 ambient = 0.4 * vertexColor;
+                    vec3 diffuse = intensity * baseColor;
+                    vec3 ambient = 0.4 * baseColor;
                     color = LightColor * (ambient + diffuse);
                 } else {
-                    vec3 diffuse = NdotL * vertexColor;
-                    vec3 ambient = 0.1 * vertexColor;
+                    vec3 diffuse = NdotL * baseColor;
+                    vec3 ambient = 0.1 * baseColor;
 
                     float specStrength = 0.0;
                     if (UseSpecular && NdotL > 0.0) {
@@ -149,12 +166,19 @@ namespace OpenGL
                     vec3 specular = SpecularColor * specStrength;
                     color = LightColor * (ambient + diffuse + specular);
                 }
+
+
                 FragColor = vec4(color, 1.0);
             }";
 
-        // GPU handles
+        //GPU handles
         private int _program;
         private int _vao, _vbo;
+
+        private int _textureID;
+        private int uUseTexture;
+        private int uTextureSampler;
+        
 
         private int uProjection, uModel, uView, uIsGrid, uLightColor;
         private int uUseModifiers, uTwistAmt, uBulgeAmt, uBulgeRadius, uShearXZ, uDeformCenter;
@@ -163,11 +187,11 @@ namespace OpenGL
         private int uUseCelShading, uUseCartoonCelShading;
         private int uIsObj;
 
-        // UI
+        //UI
         private TrackBar tbTwist, tbBulge, tbBulgeR, tbShearX, tbShearZ;
-        private CheckBox _chkGrid, _chkSpecular, _CelShading, _chkCartoonCelShading;
+        private CheckBox _chkGrid, _chkSpecular, _CelShading, _chkCartoonCelShading, _chkTexture;
 
-        // Model data
+        //Model
         private readonly List<float> verticesModel = new List<float>();
         private readonly List<float> verticesGround = new List<float>();
         private readonly List<float> verticesLight = new List<float>();
@@ -177,7 +201,6 @@ namespace OpenGL
         private int modelVertexCount = 0;
         private int lightVertexCount = 0;
 
-        // transform
         private Vector4 Angle = new Vector4(0, 0, 0, 1);
         private Vector3 Scale = new Vector3(1, 1, 1);
         private Vector3 _translation = Vector3.Zero;
@@ -185,11 +208,9 @@ namespace OpenGL
         private Matrix4 Projection;
         private Matrix4 Model;
 
-        // state
         private bool _showGrid = true;
         private Vector3 _lightPos = new Vector3(0f, 3f, 3f);
 
-        // camera
         private bool _dragging = false;
         private Point _lastMouse;
         private float _yaw = 0f;
@@ -230,7 +251,7 @@ namespace OpenGL
             this.Controls.Add(modifierPanel);
             modifierPanel.BringToFront();
 
-            // helper UI builders
+            //UI
             Label MakeLbl(string text, int top)
             {
                 var l = new Label { Text = text, Left = 12, Top = top, Width = 220, ForeColor = Color.LightBlue, BackColor = Color.Transparent };
@@ -255,7 +276,7 @@ namespace OpenGL
 
             int y = 20;
 
-            // shape selector
+            //shape selector
             MakeLbl("Shape:", y);
             y += 36;
             var shapeCombo = new ComboBox
@@ -277,7 +298,6 @@ namespace OpenGL
             modifierPanel.Controls.Add(shapeCombo);
             y += 40;
 
-            // cel shading
             _CelShading = new CheckBox
             {
                 Text = "Use Cel Shading",
@@ -316,7 +336,7 @@ namespace OpenGL
             modifierPanel.Controls.Add(_chkCartoonCelShading);
             y += 32;
 
-            // grid
+            //grid
             _chkGrid = new CheckBox
             {
                 Text = "Show grid",
@@ -331,7 +351,7 @@ namespace OpenGL
             modifierPanel.Controls.Add(_chkGrid);
             y += 32;
 
-            // specular
+            //specular
             _chkSpecular = new CheckBox
             {
                 Text = "Specular (Blinn-Phong)",
@@ -351,7 +371,26 @@ namespace OpenGL
             modifierPanel.Controls.Add(_chkSpecular);
             y += 32;
 
-            // twist
+            _chkTexture = new CheckBox
+            {
+                Text = "Use Texture",
+                Left = 12,
+                Top = y,
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Checked = false,
+                AutoSize = true
+            };
+            _chkTexture.CheckedChanged += (s, e) =>
+            {
+                glControl1.MakeCurrent();
+                if (uUseTexture >= 0)
+                    GL.Uniform1(uUseTexture, _chkTexture.Checked ? 1 : 0);
+                glControl1.Invalidate();
+            };
+            modifierPanel.Controls.Add(_chkTexture);
+            y += 32;
+
             MakeLbl("Twist (deg per Y-unit):", y); y += 20;
             tbTwist = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = -360, Maximum = 360, TickFrequency = 60, Value = 0 };
             tbTwist.Scroll += (s, e) =>
@@ -363,7 +402,6 @@ namespace OpenGL
             modifierPanel.Controls.Add(tbTwist);
             y += 50;
 
-            // bulge
             MakeLbl("Bulge amount (-100..300):", y); y += 20;
             tbBulge = new TrackBar { Left = 12, Top = y, Width = modifierPanel.Width - 24, Minimum = -100, Maximum = 300, TickFrequency = 20, Value = 0 };
             tbBulge.Scroll += (s, e) =>
@@ -436,6 +474,10 @@ namespace OpenGL
             _program = BuildProgram(VertexSrc, FragmentSrc);
             GL.UseProgram(_program);
 
+            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string texPath = System.IO.Path.Combine(desktop, "OpenGL", "Textures", "1812.tga");
+            _textureID = LoadTGA(texPath, 0);
+
             uUseSpecular = GL.GetUniformLocation(_program, "UseSpecular");
             uProjection = GL.GetUniformLocation(_program, "Projection");
             uModel = GL.GetUniformLocation(_program, "Model");
@@ -443,10 +485,19 @@ namespace OpenGL
             uIsGrid = GL.GetUniformLocation(_program, "IsGrid");
             uLightColor = GL.GetUniformLocation(_program, "LightColor");
 
+            uUseTexture = GL.GetUniformLocation(_program, "UseTexture");
+            uTextureSampler = GL.GetUniformLocation(_program, "texture1");
+
             uUseCelShading = GL.GetUniformLocation(_program, "UseCelShading");
             uUseCartoonCelShading = GL.GetUniformLocation(_program, "UseCartoonCelShading"); // <- MANGLEDE
             if (uUseCelShading >= 0) GL.Uniform1(uUseCelShading, 0);
             if (uUseCartoonCelShading >= 0) GL.Uniform1(uUseCartoonCelShading, 0);
+
+            if (uUseTexture >= 0) GL.Uniform1(uUseTexture, 0);
+            if (uTextureSampler >= 0) GL.Uniform1(uTextureSampler, 0); 
+
+            GL.ActiveTexture(TextureUnit.Texture0);
+            GL.BindTexture(TextureTarget.Texture2D, _textureID);
 
             uUseModifiers = GL.GetUniformLocation(_program, "UseModifiers");
             uTwistAmt = GL.GetUniformLocation(_program, "TwistAmt");
@@ -493,10 +544,8 @@ namespace OpenGL
             verticesGround.Clear();
             verticesLight.Clear();
 
-            // grid + pynt
             CreateGroundGrid(width: 100, depth: 100, divX: 100, divZ: 100, yOffset: -1f);
 
-            // model og lyskilde
             CreateTriangle(1.0f, 1.0f, 1.0f);
             CreateLightMarker(1.0f);
 
@@ -514,16 +563,16 @@ namespace OpenGL
             GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
             GL.BufferData(BufferTarget.ArrayBuffer, all.Length * sizeof(float), all, BufferUsageHint.StaticDraw);
 
-            GL.EnableVertexAttribArray(0); // position
+            GL.EnableVertexAttribArray(0); //position
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, STRIDE, 0);
 
-            GL.EnableVertexAttribArray(1); // color
+            GL.EnableVertexAttribArray(1); //color
             GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, STRIDE, 3 * sizeof(float));
 
-            GL.EnableVertexAttribArray(2); // uv
+            GL.EnableVertexAttribArray(2); //uv
             GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, STRIDE, 6 * sizeof(float));
 
-            GL.EnableVertexAttribArray(3); // normal
+            GL.EnableVertexAttribArray(3); //normal
             GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, STRIDE, 8 * sizeof(float));
 
             GL.BindVertexArray(0);
@@ -543,7 +592,7 @@ namespace OpenGL
 
             GL.UniformMatrix4(uView, false, ref View);
 
-            // grid
+            //grid
             if (_showGrid && groundVertexCount > 0)
             {
                 GL.DepthMask(false);
@@ -555,14 +604,14 @@ namespace OpenGL
                 GL.DepthMask(true);
             }
 
-            // tegn model
+            //model
             GL.Uniform1(uIsGrid, 0);
             GL.Uniform1(uUseModifiers, 1);
             GL.Uniform1(uIsObj, _activeShape == ShapeType.ObjModel ? 1 : 0);
             GL.UniformMatrix4(uModel, false, ref Model);
             GL.DrawArrays(PrimitiveType.Triangles, groundVertexCount, modelVertexCount);
 
-            // tegn lyskilde
+            //lyskilde
             if (lightVertexCount > 0)
             {
                 GL.Uniform1(uIsGrid, 1);
@@ -593,7 +642,6 @@ namespace OpenGL
             var R = Matrix4.CreateFromQuaternion(q);
             var T = Matrix4.CreateTranslation(_translation);
 
-            // Bemærk: Mange vælger T * R * S (lokal skalering før world translation).
             Model = S * R * T;
 
             GL.UniformMatrix4(uModel, false, ref Model);
@@ -1031,7 +1079,7 @@ namespace OpenGL
         private void AddGridLine(float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b)
         {
             _activeGround = true;
-            // UV dummy, normal=(0,1,0)
+
             active.AddRange(new[] { x1, y1, z1, r, g, b, 0, 0, 0, 1, 0 });
             active.AddRange(new[] { x2, y2, z2, r, g, b, 0, 0, 0, 1, 0 });
             _activeGround = false;
@@ -1108,7 +1156,7 @@ namespace OpenGL
         }
         #endregion
 
-        // setters
+        //setters
         public void SetTranslation(float tx, float ty, float tz)
         {
             _translation = new Vector3(tx, ty, tz);
@@ -1127,7 +1175,7 @@ namespace OpenGL
             UpdateModelMatrix();
         }
 
-        // helpers 
+        //helpers 
         private static Vector3 Normalize(float x, float y, float z)
         {
             float len = MathF.Sqrt(x * x + y * y + z * z);
@@ -1161,7 +1209,120 @@ namespace OpenGL
             glControl1.Invalidate();
         }
 
-        // obj loader 
+
+        private int Create(int width, int height, bool alpha, byte[] pixels, int unit)
+        {
+            int tex = GL.GenTexture();
+
+            GL.ActiveTexture(TextureUnit.Texture0 + unit);
+            GL.BindTexture(TextureTarget.Texture2D, tex);
+
+            var internalFmt = alpha ? PixelInternalFormat.Rgba : PixelInternalFormat.Rgb;
+            var fmt = alpha ? PixelFormat.Rgba : PixelFormat.Rgb;
+
+            GL.TexImage2D(TextureTarget.Texture2D, 0, internalFmt, width, height, 0, fmt,
+                          PixelType.UnsignedByte, pixels);
+
+            GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
+
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter,
+                            (int)TextureMinFilter.LinearMipmapLinear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter,
+                            (int)TextureMagFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
+                            (int)TextureWrapMode.Repeat);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
+                            (int)TextureWrapMode.Repeat);
+
+            return tex;
+        }
+
+        public struct TGAHeader
+        {
+            public byte identSize;       //size of ID field that follows 18 byte header (0 usually)
+            public byte colorMapType;    //type of colour map 0=none, 1=has palette
+            public byte imageType;       //type of image 2=rgb uncompressed, 10=rgb rle compressed
+
+            public ushort colorMapStart; //first colour map entry
+            public ushort colorMapLength;//number of colours
+            public byte colorMapBits;    //number of bits per palette entry
+
+            public ushort startX;        //image x origin
+            public ushort startY;        //image y origin
+
+            public ushort width;         //image width in pixels
+            public ushort height;        //image height in pixels
+            public byte bits;            //image bits per pixel 24/32
+            public byte descriptor;      //image descriptor bits (alpha bits, origin)
+        }
+
+        public int LoadTGA(string filename, ushort unit)
+        {
+            if (File.Exists(filename))
+            {
+                byte[] bytes = File.ReadAllBytes(filename);
+                if (bytes != null)
+                {
+                    TGAHeader header = new TGAHeader();
+                    header.identSize = bytes[0];
+                    header.colorMapType = bytes[1];
+                    header.imageType = bytes[2];
+                    header.colorMapStart = (ushort)(bytes[3] + (bytes[4] << 8));
+                    header.colorMapLength = (ushort)(bytes[5] + (bytes[6] << 8));
+                    header.colorMapBits = bytes[7];
+                    header.startX = (ushort)(bytes[8] + (bytes[9] << 8));
+                    header.startY = (ushort)(bytes[10] + (bytes[11] << 8));
+                    header.width = (ushort)(bytes[12] + (bytes[13] << 8));
+                    header.height = (ushort)(bytes[14] + (bytes[15] << 8));
+                    header.bits = bytes[16];
+                    header.descriptor = bytes[17];
+
+                    byte colorChannels = (byte)(header.bits >> 3);
+                    bool alpha = colorChannels > 3;
+
+                    int offset = 18 + header.identSize;
+                    byte[] pixels = new byte[header.width * header.height * colorChannels];
+
+                    for (int i = 0; i < header.width * header.height; i++)
+                    {
+                        int src = offset + i * colorChannels;
+                        int dst = i * colorChannels;
+
+                        byte b = bytes[src + 0];
+                        byte g = bytes[src + 1];
+                        byte r = bytes[src + 2];
+
+                        pixels[dst + 0] = r;
+                        pixels[dst + 1] = g;
+                        pixels[dst + 2] = b;
+
+                        if (colorChannels == 4)
+                            pixels[dst + 3] = bytes[src + 3];
+                    }
+
+                    return Create(header.width, header.height, alpha, pixels, unit);
+                }
+            }
+            return -1;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        //obj loader 
         private void LoadObj(string path, List<float> vertices)
         {
             var lines = System.IO.File.ReadAllLines(path);
