@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using OpenTK;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
+using System.IO;
 
 namespace OpenGL
 {
@@ -120,58 +121,70 @@ namespace OpenGL
             out vec4 FragColor;
 
             void main() {
+
                 if (IsGrid) {
                     FragColor = vec4(vertexColor, 1.0);
                     return;
                 }
 
                 vec3 baseColor = vertexColor; 
-
                 if (UseTexture) {
-                   baseColor = texture(texture1, texCoord).rgb; 
+                    baseColor = texture(texture1, texCoord).rgb; 
                 }
 
+                //lysretning + afstand
                 vec3 N = normalize(vNormal);
-                vec3 L = normalize(LightPos - vWorldPos);
+                vec3 Ldir = LightPos - vWorldPos;
+                float dist = length(Ldir);
+                vec3 L = normalize(Ldir);
+
                 vec3 V = normalize(ViewPos - vWorldPos);
+                vec3 H = normalize(L + V);
 
-                if (UseCartoonCelShading) {
-                    float angle = dot(N, V);
-                    if (angle < 0.3) {
-                        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-                        return;
-                    }
-                }
-                
                 float NdotL = max(dot(N, L), 0.0);
-                vec3 color;
-                
 
+                //attenuation
+                float k0 = 1.0;   // constant
+                float k1 = 0.09;  // linear
+                float k2 = 0.032; // quadratic
+                float attenuation = 1.0 / (k0 + k1 * dist + k2 * dist * dist);
+
+                //Blinn-Phong
+                vec3 ambient  = 0.1 * baseColor;
+                vec3 diffuse  = NdotL * baseColor;
+
+                float specStrength = 0.0;
+                if (UseSpecular && NdotL > 0.0) {
+                    float NdotH = max(dot(N, H), 0.0);
+                    specStrength = pow(NdotH, shininess);
+                }
+                vec3 specular = SpecularColor * specStrength;
+
+                vec3 color = LightColor * (ambient + diffuse + specular);
+
+                //Toon/Cel shading filter
                 if (UseCelShading || UseCartoonCelShading) {
+                    // kvantiser diffuse (cel shading trin)
                     float levels = 3.0;
-                    float intensity = floor(NdotL * levels) / (levels - 1.0);
-                    vec3 diffuse = intensity * baseColor;
-                    vec3 ambient = 0.4 * baseColor;
-                    color = LightColor * (ambient + diffuse);
-                } else {
-                    vec3 diffuse = NdotL * baseColor;
-                    vec3 ambient = 0.1 * baseColor;
+                    float quantized = floor(NdotL * levels) / (levels - 1.0);
+                    diffuse = quantized * baseColor;
 
-                    float specStrength = 0.0;
-                    if (UseSpecular && NdotL > 0.0) {
-                        vec3 H = normalize(L + V);
-                        float NdotH = max(dot(N, H), 0.0);
-                        specStrength = pow(NdotH, shininess);
+                    if (UseCartoonCelShading) {
+                        float angle = dot(N, V);
+                        if (angle < 0.3) {
+                            FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                            return;
+                        }
                     }
-                    vec3 specular = SpecularColor * specStrength;
-                    color = LightColor * (ambient + diffuse + specular);
+
+                    color = LightColor * (0.4 * baseColor + diffuse);
                 }
 
+                color *= attenuation;
 
                 FragColor = vec4(color, 1.0);
             }";
 
-        //GPU handles
         private int _program;
         private int _vao, _vbo;
 
@@ -190,6 +203,7 @@ namespace OpenGL
         //UI
         private TrackBar tbTwist, tbBulge, tbBulgeR, tbShearX, tbShearZ;
         private CheckBox _chkGrid, _chkSpecular, _CelShading, _chkCartoonCelShading, _chkTexture;
+
 
         //Model
         private readonly List<float> verticesModel = new List<float>();
@@ -467,64 +481,28 @@ namespace OpenGL
         {
             glControl1.MakeCurrent();
 
+            //startup
             GL.ClearColor(0.5f, 0.3f, 0.6f, 1.0f);
             GL.Enable(EnableCap.DepthTest);
             GL.Enable(EnableCap.CullFace);
 
+            //Shader program
             _program = BuildProgram(VertexSrc, FragmentSrc);
             GL.UseProgram(_program);
 
+            //texture setup
             string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            string texPath = System.IO.Path.Combine(desktop, "OpenGL", "Textures", "1812.tga");
+            string texPath = Path.Combine(desktop, "OpenGL", "Textures", "1812.tga");
             _textureID = LoadTGA(texPath, 0);
-
-            uUseSpecular = GL.GetUniformLocation(_program, "UseSpecular");
-            uProjection = GL.GetUniformLocation(_program, "Projection");
-            uModel = GL.GetUniformLocation(_program, "Model");
-            uView = GL.GetUniformLocation(_program, "View");
-            uIsGrid = GL.GetUniformLocation(_program, "IsGrid");
-            uLightColor = GL.GetUniformLocation(_program, "LightColor");
-
-            uUseTexture = GL.GetUniformLocation(_program, "UseTexture");
-            uTextureSampler = GL.GetUniformLocation(_program, "texture1");
-
-            uUseCelShading = GL.GetUniformLocation(_program, "UseCelShading");
-            uUseCartoonCelShading = GL.GetUniformLocation(_program, "UseCartoonCelShading"); // <- MANGLEDE
-            if (uUseCelShading >= 0) GL.Uniform1(uUseCelShading, 0);
-            if (uUseCartoonCelShading >= 0) GL.Uniform1(uUseCartoonCelShading, 0);
-
-            if (uUseTexture >= 0) GL.Uniform1(uUseTexture, 0);
-            if (uTextureSampler >= 0) GL.Uniform1(uTextureSampler, 0); 
 
             GL.ActiveTexture(TextureUnit.Texture0);
             GL.BindTexture(TextureTarget.Texture2D, _textureID);
 
-            uUseModifiers = GL.GetUniformLocation(_program, "UseModifiers");
-            uTwistAmt = GL.GetUniformLocation(_program, "TwistAmt");
-            uBulgeAmt = GL.GetUniformLocation(_program, "BulgeAmt");
-            uBulgeRadius = GL.GetUniformLocation(_program, "BulgeRadius");
-            uShearXZ = GL.GetUniformLocation(_program, "ShearXZ");
-            uDeformCenter = GL.GetUniformLocation(_program, "DeformCenter");
+            //uniforms
+            GetUniformLocations();
 
-            uLightPos = GL.GetUniformLocation(_program, "LightPos");
-            uShiny = GL.GetUniformLocation(_program, "shininess");
-            uSpecCol = GL.GetUniformLocation(_program, "SpecularColor");
-            uViewPos = GL.GetUniformLocation(_program, "ViewPos");
-
-            uIsObj = GL.GetUniformLocation(_program, "IsObj");
-
-            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular.Checked ? 1 : 0);
-            if (uUseModifiers >= 0) GL.Uniform1(uUseModifiers, 1);
-            if (uTwistAmt >= 0) GL.Uniform1(uTwistAmt, 0.0f);
-            if (uBulgeAmt >= 0) GL.Uniform1(uBulgeAmt, 0.0f);
-            if (uBulgeRadius >= 0) GL.Uniform1(uBulgeRadius, 1.0f);
-            if (uShearXZ >= 0) GL.Uniform2(uShearXZ, 0.0f, 0.0f);
-            if (uDeformCenter >= 0) GL.Uniform3(uDeformCenter, 0.0f, 0.0f, 0.0f);
-
-            if (uLightPos >= 0) GL.Uniform3(uLightPos, _lightPos);
-            if (uShiny >= 0) GL.Uniform1(uShiny, 32.0f);
-            if (uSpecCol >= 0) GL.Uniform3(uSpecCol, 1.0f, 1.0f, 1.0f);
-            if (uLightColor >= 0) GL.Uniform3(uLightColor, 1.0f, 1.0f, 1.0f);
+            //default uniform values
+            InitUniformDefaults();
 
             Model = Matrix4.Identity;
             GL.UniformMatrix4(uModel, false, ref Model);
@@ -540,42 +518,19 @@ namespace OpenGL
             _translation = Vector3.Zero;
             UpdateModelMatrix();
 
+            //geometry data
             verticesModel.Clear();
             verticesGround.Clear();
             verticesLight.Clear();
 
             CreateGroundGrid(width: 100, depth: 100, divX: 100, divZ: 100, yOffset: -1f);
-
             CreateTriangle(1.0f, 1.0f, 1.0f);
             CreateLightMarker(1.0f);
 
             groundVertexCount = verticesGround.Count / 11;
             modelVertexCount = verticesModel.Count / 11;
 
-            var all = new float[verticesGround.Count + verticesModel.Count + verticesLight.Count];
-            verticesGround.CopyTo(all, 0);
-            verticesModel.CopyTo(all, verticesGround.Count);
-            verticesLight.CopyTo(all, verticesGround.Count + verticesModel.Count);
-
-            _vao = GL.GenVertexArray();
-            _vbo = GL.GenBuffer();
-            GL.BindVertexArray(_vao);
-            GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-            GL.BufferData(BufferTarget.ArrayBuffer, all.Length * sizeof(float), all, BufferUsageHint.StaticDraw);
-
-            GL.EnableVertexAttribArray(0); //position
-            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, STRIDE, 0);
-
-            GL.EnableVertexAttribArray(1); //color
-            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, STRIDE, 3 * sizeof(float));
-
-            GL.EnableVertexAttribArray(2); //uv
-            GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, STRIDE, 6 * sizeof(float));
-
-            GL.EnableVertexAttribArray(3); //normal
-            GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, STRIDE, 8 * sizeof(float));
-
-            GL.BindVertexArray(0);
+            UploadGeometry();
         }
 
         private void Gl_Resize(object sender, EventArgs e)
@@ -1175,7 +1130,85 @@ namespace OpenGL
             UpdateModelMatrix();
         }
 
+
         //helpers 
+        private void GetUniformLocations()
+        {
+            uUseSpecular          = GL.GetUniformLocation(_program, "UseSpecular");
+            uProjection           = GL.GetUniformLocation(_program, "Projection");
+            uModel                = GL.GetUniformLocation(_program, "Model");
+            uView                 = GL.GetUniformLocation(_program, "View");
+            uIsGrid               = GL.GetUniformLocation(_program, "IsGrid");
+            uLightColor           = GL.GetUniformLocation(_program, "LightColor");
+            uUseTexture           = GL.GetUniformLocation(_program, "UseTexture");
+            uTextureSampler       = GL.GetUniformLocation(_program, "texture1");
+            uUseCelShading        = GL.GetUniformLocation(_program, "UseCelShading");
+            uUseCartoonCelShading = GL.GetUniformLocation(_program, "UseCartoonCelShading");
+            uUseModifiers         = GL.GetUniformLocation(_program, "UseModifiers");
+            uTwistAmt             = GL.GetUniformLocation(_program, "TwistAmt");
+            uBulgeAmt             = GL.GetUniformLocation(_program, "BulgeAmt");
+            uBulgeRadius          = GL.GetUniformLocation(_program, "BulgeRadius");
+            uShearXZ              = GL.GetUniformLocation(_program, "ShearXZ");
+            uDeformCenter         = GL.GetUniformLocation(_program, "DeformCenter");
+            uLightPos             = GL.GetUniformLocation(_program, "LightPos");
+            uShiny                = GL.GetUniformLocation(_program, "shininess");
+            uSpecCol              = GL.GetUniformLocation(_program, "SpecularColor");
+            uViewPos              = GL.GetUniformLocation(_program, "ViewPos");
+            uIsObj                = GL.GetUniformLocation(_program, "IsObj");
+        }
+
+        private void InitUniformDefaults()
+        {
+            if (uUseSpecular >= 0) GL.Uniform1(uUseSpecular, _chkSpecular.Checked ? 1 : 0);
+            if (uUseModifiers >= 0) GL.Uniform1(uUseModifiers, 1);
+
+            if (uTwistAmt >= 0) GL.Uniform1(uTwistAmt, 0.0f);
+            if (uBulgeAmt >= 0) GL.Uniform1(uBulgeAmt, 0.0f);
+            if (uBulgeRadius >= 0) GL.Uniform1(uBulgeRadius, 1.0f);
+            if (uShearXZ >= 0) GL.Uniform2(uShearXZ, 0.0f, 0.0f);
+            if (uDeformCenter >= 0) GL.Uniform3(uDeformCenter, 0.0f, 0.0f, 0.0f);
+
+            if (uUseTexture >= 0) GL.Uniform1(uUseTexture, 0);
+            if (uTextureSampler >= 0) GL.Uniform1(uTextureSampler, 0);
+
+            if (uUseCelShading >= 0) GL.Uniform1(uUseCelShading, 0);
+            if (uUseCartoonCelShading >= 0) GL.Uniform1(uUseCartoonCelShading, 0);
+
+            if (uLightPos >= 0) GL.Uniform3(uLightPos, _lightPos);
+            if (uShiny >= 0) GL.Uniform1(uShiny, 32.0f);
+            if (uSpecCol >= 0) GL.Uniform3(uSpecCol, 1.0f, 1.0f, 1.0f);
+            if (uLightColor >= 0) GL.Uniform3(uLightColor, 1.0f, 1.0f, 1.0f);
+        }
+
+        private void UploadGeometry()
+        {
+            var all = new float[verticesGround.Count + verticesModel.Count + verticesLight.Count];
+            verticesGround.CopyTo(all, 0);
+            verticesModel.CopyTo(all, verticesGround.Count);
+            verticesLight.CopyTo(all, verticesGround.Count + verticesModel.Count);
+
+            _vao = GL.GenVertexArray();
+            _vbo = GL.GenBuffer();
+
+            GL.BindVertexArray(_vao);
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
+            GL.BufferData(BufferTarget.ArrayBuffer, all.Length * sizeof(float), all, BufferUsageHint.StaticDraw);
+
+            GL.EnableVertexAttribArray(0); //position
+            GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, STRIDE, 0);
+
+            GL.EnableVertexAttribArray(1); //color
+            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, STRIDE, 3 * sizeof(float));
+
+            GL.EnableVertexAttribArray(2); //uv
+            GL.VertexAttribPointer(2, 2, VertexAttribPointerType.Float, false, STRIDE, 6 * sizeof(float));
+
+            GL.EnableVertexAttribArray(3); //normal
+            GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, STRIDE, 8 * sizeof(float));
+
+            GL.BindVertexArray(0);
+        }
+
         private static Vector3 Normalize(float x, float y, float z)
         {
             float len = MathF.Sqrt(x * x + y * y + z * z);
@@ -1243,9 +1276,9 @@ namespace OpenGL
             public byte colorMapType;    //type of colour map 0=none, 1=has palette
             public byte imageType;       //type of image 2=rgb uncompressed, 10=rgb rle compressed
 
-            public ushort colorMapStart; //first colour map entry
-            public ushort colorMapLength;//number of colours
-            public byte colorMapBits;    //number of bits per palette entry
+            public ushort colorMapStart;        //first colour map entry
+            public ushort colorMapLength;       //number of colours
+            public byte colorMapBits;           //number of bits per palette entry
 
             public ushort startX;        //image x origin
             public ushort startY;        //image y origin
@@ -1305,20 +1338,6 @@ namespace OpenGL
             }
             return -1;
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
