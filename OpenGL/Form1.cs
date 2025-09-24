@@ -24,7 +24,6 @@ namespace OpenGL
             uniform mat4 View;
             uniform mat4 Model;
 
-            // modifiers 
             uniform bool  UseModifiers;
             uniform float TwistAmt;
             uniform float BulgeAmt;
@@ -94,6 +93,7 @@ namespace OpenGL
 
                 vertexColor = Color;
                 texCoord = UV;
+
             }";
 
         private const string FragmentSrc =
@@ -200,7 +200,6 @@ namespace OpenGL
         private int uUseCelShading, uUseCartoonCelShading;
         private int uIsObj;
 
-        //UI
         private TrackBar tbTwist, tbBulge, tbBulgeR, tbShearX, tbShearZ;
         private CheckBox _chkGrid, _chkSpecular, _CelShading, _chkCartoonCelShading, _chkTexture;
 
@@ -231,7 +230,7 @@ namespace OpenGL
         private float _pitch = 0f;
         private float _distance = -5f;
 
-        private enum ShapeType { Triangle, Quad, Box, SubdividedBox, Cylinder, Flade, ObjModel }
+        private enum ShapeType { Triangle, Quad, Box, SubdividedBox, Cylinder, Flade }
         private ShapeType _activeShape = ShapeType.Triangle;
 
         public Form1()
@@ -248,6 +247,8 @@ namespace OpenGL
             glControl1.MouseMove += GlControl1_MouseMove;
             glControl1.MouseWheel += GlControl1_MouseWheel;
 
+
+            #region UI
             var modifierPanel = new Panel
             {
                 Dock = DockStyle.Right,
@@ -290,6 +291,103 @@ namespace OpenGL
 
             int y = 20;
 
+            //objekt loader - lokalt
+            var btnLoadObj = new Button
+            {
+                Text = "Load OBJ Model",
+                Left = 12,
+                Top = y,
+                Width = modifierPanel.Width - 24,
+                Height = 30,
+                BackColor = Color.DarkSlateGray,
+                ForeColor = Color.White
+            };
+            btnLoadObj.Click += (s, e) =>
+            {
+                using var ofd = new OpenFileDialog
+                {
+                    Filter = "OBJ Models (*.obj)|*.obj|All files (*.*)|*.*"
+                };
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    verticesModel.Clear();
+                    LoadObj(ofd.FileName, verticesModel);
+
+                    Scale = new Vector3(0.01f);
+                    UpdateModelMatrix();
+
+                    modelVertexCount = verticesModel.Count / 11;
+                    var all = new float[verticesGround.Count + verticesModel.Count + verticesLight.Count];
+                    verticesGround.CopyTo(all, 0);
+                    verticesModel.CopyTo(all, verticesGround.Count);
+                    verticesLight.CopyTo(all, verticesGround.Count + verticesModel.Count);
+
+                    GL.BindVertexArray(_vao);
+                    GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
+                    GL.BufferData(BufferTarget.ArrayBuffer, all.Length * sizeof(float), all, BufferUsageHint.StaticDraw);
+                    GL.BindVertexArray(0);
+
+                    glControl1.Invalidate();
+                }
+            };
+            modifierPanel.Controls.Add(btnLoadObj);
+            y += 40;
+
+            //load et tga tekstur 
+            var btnLoadTexture = new Button
+            {
+                Text = "Load Texture",
+                Left = 12,
+                Top = y,
+                Width = modifierPanel.Width - 24,
+                Height = 30,
+                BackColor = Color.DarkSlateGray,
+                ForeColor = Color.White
+            };
+            btnLoadTexture.Click += (s, e) =>
+            {
+                using var ofd = new OpenFileDialog
+                {
+                    Filter = "Image files (*.tga;*.png;*.jpg)|*.tga;*.png;*.jpg|All files (*.*)|*.*"
+                };
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    if (Path.GetExtension(ofd.FileName).ToLower() == ".tga")
+                    {
+                        _textureID = LoadTGA(ofd.FileName, 0);
+                    }
+                    else
+                    {
+                        using var bmp = new Bitmap(ofd.FileName);
+                        var data = bmp.LockBits(
+                            new Rectangle(0, 0, bmp.Width, bmp.Height),
+                            System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                        int tex = GL.GenTexture();
+                        GL.BindTexture(TextureTarget.Texture2D, tex);
+                        GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba,
+                            bmp.Width, bmp.Height, 0, PixelFormat.Bgra,
+                            PixelType.UnsignedByte, data.Scan0);
+
+                        bmp.UnlockBits(data);
+                        GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
+
+                        _textureID = tex;
+                    }
+
+                    GL.ActiveTexture(TextureUnit.Texture0);
+                    GL.BindTexture(TextureTarget.Texture2D, _textureID);
+
+                    if (uUseTexture >= 0)
+                        GL.Uniform1(uUseTexture, 1);
+
+                    glControl1.Invalidate();
+                }
+            };
+            modifierPanel.Controls.Add(btnLoadTexture);
+            y += 40;
+
             //shape selector
             MakeLbl("Shape:", y);
             y += 36;
@@ -301,7 +399,7 @@ namespace OpenGL
                 Width = modifierPanel.Width - 24,
                 BackColor = Color.MediumVioletRed
             };
-            shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade", "ObjModel" });
+            shapeCombo.Items.AddRange(new object[] { "Triangle", "Quad", "Box", "Subdivided Box", "Cylinder", "Flade" });
             shapeCombo.SelectedIndex = (int)_activeShape;
             shapeCombo.SelectedIndexChanged += (s, e) =>
             {
@@ -504,6 +602,10 @@ namespace OpenGL
                 glControl1.Invalidate();
                 modifierPanel.Invalidate();
             };
+
+            #endregion
+
+
         }
 
         #region load, resize, paint
@@ -522,7 +624,7 @@ namespace OpenGL
 
             //texture setup
             string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            string texPath = Path.Combine(desktop, "C# rep", "Textures", "Checker.tga");
+            string texPath = Path.Combine(desktop, "OpenGL", "Textures", "Checker.tga");
             _textureID = LoadTGA(texPath, 0);
 
             GL.ActiveTexture(TextureUnit.Texture0);
@@ -592,7 +694,6 @@ namespace OpenGL
             //model
             GL.Uniform1(uIsGrid, 0);
             GL.Uniform1(uUseModifiers, 1);
-            GL.Uniform1(uIsObj, _activeShape == ShapeType.ObjModel ? 1 : 0);
             GL.UniformMatrix4(uModel, false, ref Model);
             GL.DrawArrays(PrimitiveType.Triangles, groundVertexCount, modelVertexCount);
 
@@ -765,24 +866,6 @@ namespace OpenGL
                 case ShapeType.Flade:
                     CreateFlade(0.5f, 0.5f, 0.5f);
                     break;
-                case ShapeType.ObjModel:
-                    {
-                        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                        var path = System.IO.Path.Combine(desktop, "C# rep", "Models", "Fly.obj");
-
-                        if (!System.IO.File.Exists(path))
-                        {
-                            MessageBox.Show("Objektet blev ikke fundet:\n" + path);
-                            break;
-                        }
-
-                        verticesModel.Clear();
-                        LoadObj(path, verticesModel);
-
-                        Scale = new Vector3(0.01f);
-                        UpdateModelMatrix();
-                        break;
-                    }
             }
 
             modelVertexCount = verticesModel.Count / 11;
@@ -1058,6 +1141,77 @@ namespace OpenGL
 
             lightVertexCount = verticesLight.Count / 11;
         }
+
+
+        //obj loader 
+        private void LoadObj(string path, List<float> vertices)
+        {
+            var lines = System.IO.File.ReadAllLines(path);
+            var positions = new List<Vector3>();
+            var normals = new List<Vector3>();
+            var uvs = new List<Vector2>();
+
+            foreach (var line in lines)
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) continue;
+
+                if (parts[0] == "v")
+                {
+                    positions.Add(new Vector3(
+                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture)));
+                }
+                else if (parts[0] == "vn")
+                {
+                    normals.Add(new Vector3(
+                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture)));
+                }
+                else if (parts[0] == "vt")
+                {
+                    uvs.Add(new Vector2(
+                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture)));
+                }
+                else if (parts[0] == "f")
+                {
+                    var faceIndices = new List<(int vi, int ti, int ni)>();
+                    for (int i = 1; i < parts.Length; i++)
+                    {
+                        var idx = parts[i].Split('/');
+                        int vi = int.Parse(idx[0]) - 1;
+                        int ti = (idx.Length > 1 && idx[1] != "") ? int.Parse(idx[1]) - 1 : -1;
+                        int ni = (idx.Length > 2 && idx[2] != "") ? int.Parse(idx[2]) - 1 : -1;
+
+                        faceIndices.Add((vi, ti, ni));
+                    }
+
+                    // fan triangulation: (0,i,i+1)
+                    for (int i = 1; i + 1 < faceIndices.Count; i++)
+                    {
+                        var triplet = new[] { faceIndices[0], faceIndices[i], faceIndices[i + 1] };
+                        foreach (var (vi, ti, ni) in triplet)
+                        {
+                            var p = positions[vi];
+                            var t = (ti >= 0 && ti < uvs.Count) ? uvs[ti] : Vector2.Zero;
+                            var n = (ni >= 0 && ni < normals.Count) ? normals[ni] : Vector3.UnitY;
+
+                            vertices.AddRange(new float[] {
+                                p.X, p.Y, p.Z,
+                                1f, 1f, 1f,
+                                t.X, t.Y,
+                                n.X, n.Y, n.Z
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+
         #endregion
 
         #region grid og pynt
@@ -1273,6 +1427,8 @@ namespace OpenGL
         }
 
 
+
+        //texture loader
         private int Create(int width, int height, bool alpha, byte[] pixels, int unit)
         {
             int tex = GL.GenTexture();
@@ -1367,76 +1523,6 @@ namespace OpenGL
                 }
             }
             return -1;
-        }
-
-
-
-        //obj loader 
-        private void LoadObj(string path, List<float> vertices)
-        {
-            var lines = System.IO.File.ReadAllLines(path);
-            var positions = new List<Vector3>();
-            var normals = new List<Vector3>();
-            var uvs = new List<Vector2>();
-
-            foreach (var line in lines)
-            {
-                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 0) continue;
-
-                if (parts[0] == "v")
-                {
-                    positions.Add(new Vector3(
-                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
-                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
-                        float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture)));
-                }
-                else if (parts[0] == "vn")
-                {
-                    normals.Add(new Vector3(
-                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
-                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture),
-                        float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture)));
-                }
-                else if (parts[0] == "vt")
-                {
-                    uvs.Add(new Vector2(
-                        float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
-                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture)));
-                }
-                else if (parts[0] == "f")
-                {
-                    var faceIndices = new List<(int vi, int ti, int ni)>();
-                    for (int i = 1; i < parts.Length; i++)
-                    {
-                        var idx = parts[i].Split('/');
-                        int vi = int.Parse(idx[0]) - 1;
-                        int ti = (idx.Length > 1 && idx[1] != "") ? int.Parse(idx[1]) - 1 : -1;
-                        int ni = (idx.Length > 2 && idx[2] != "") ? int.Parse(idx[2]) - 1 : -1;
-
-                        faceIndices.Add((vi, ti, ni));
-                    }
-
-                    // fan triangulation: (0,i,i+1)
-                    for (int i = 1; i + 1 < faceIndices.Count; i++)
-                    {
-                        var triplet = new[] { faceIndices[0], faceIndices[i], faceIndices[i + 1] };
-                        foreach (var (vi, ti, ni) in triplet)
-                        {
-                            var p = positions[vi];
-                            var t = (ti >= 0 && ti < uvs.Count) ? uvs[ti] : Vector2.Zero;
-                            var n = (ni >= 0 && ni < normals.Count) ? normals[ni] : Vector3.UnitY;
-
-                            vertices.AddRange(new float[] {
-                                p.X, p.Y, p.Z,
-                                1f, 1f, 1f,
-                                t.X, t.Y,
-                                n.X, n.Y, n.Z
-                            });
-                        }
-                    }
-                }
-            }
         }
     }
 }
