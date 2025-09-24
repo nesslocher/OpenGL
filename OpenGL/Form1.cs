@@ -144,9 +144,9 @@ namespace OpenGL
                 float NdotL = max(dot(N, L), 0.0);
 
                 //attenuation
-                float k0 = 1.0;   // constant
-                float k1 = 0.09;  // linear
-                float k2 = 0.032; // quadratic
+                float k0 = 1.0;   //constant
+                float k1 = 0.09;  //linear
+                float k2 = 0.032; //quadratic
                 float attenuation = 1.0 / (k0 + k1 * dist + k2 * dist * dist);
 
                 //Blinn-Phong
@@ -446,6 +446,36 @@ namespace OpenGL
             modifierPanel.Controls.Add(tbShearZ);
             y += 50;
 
+
+            //lysstyrken 
+            MakeLbl("Light intensity (0..200%):", y);
+            y += 20;
+            var tbLight = new TrackBar
+            {
+                Left = 12,
+                Top = y,
+                Width = modifierPanel.Width - 24,
+                Minimum = 0,
+                Maximum = 300,
+                TickFrequency = 20,
+                Value = 100
+            };
+            modifierPanel.Controls.Add(tbLight);
+            y += 50;
+
+            tbLight.Scroll += (s, e) =>
+            {
+                float intensity = tbLight.Value / 100f;
+                glControl1.MakeCurrent();
+                if (uLightColor >= 0)
+                {
+                    GL.Uniform3(uLightColor, intensity, intensity, intensity);
+                }
+                glControl1.Invalidate();
+            };
+
+
+
             EventHandler shearUpdate = (s, e) =>
             {
                 float sx = tbShearX.Value / 100f;
@@ -492,7 +522,7 @@ namespace OpenGL
 
             //texture setup
             string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            string texPath = Path.Combine(desktop, "OpenGL", "Textures", "1812.tga");
+            string texPath = Path.Combine(desktop, "C# rep", "Textures", "Checker.tga");
             _textureID = LoadTGA(texPath, 0);
 
             GL.ActiveTexture(TextureUnit.Texture0);
@@ -738,11 +768,11 @@ namespace OpenGL
                 case ShapeType.ObjModel:
                     {
                         var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                        var path = System.IO.Path.Combine(desktop, "OpenGL", "Modeller", "Fly.obj");
+                        var path = System.IO.Path.Combine(desktop, "C# rep", "Models", "Fly.obj");
 
                         if (!System.IO.File.Exists(path))
                         {
-                            MessageBox.Show("OBJ ikke fundet:\n" + path);
+                            MessageBox.Show("Objektet blev ikke fundet:\n" + path);
                             break;
                         }
 
