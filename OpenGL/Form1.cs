@@ -144,10 +144,13 @@ namespace OpenGL
                 float NdotL = max(dot(N, L), 0.0);
 
                 //attenuation
-                float k0 = 1.0;   //constant
-                float k1 = 0.09;  //linear
-                float k2 = 0.032; //quadratic
+                float k0 = 1.0;   
+                float k1 = 0.09;  //lineaert 
+                float k2 = 0.032; //eksponentiel
+
                 float attenuation = 1.0 / (k0 + k1 * dist + k2 * dist * dist);
+                //float attenuation = 1.0 / (1.0 + 0.09 * dist);
+                //float attenuation = 1.0 / (1.0 + 0.032 * dist * dist);
 
                 //Blinn-Phong
                 vec3 ambient  = 0.1 * baseColor;
@@ -236,6 +239,8 @@ namespace OpenGL
         public Form1()
         {
             InitializeComponent();
+
+            //kig på noget MSAA (anti-aliasing)
 
             glControl1.Dock = DockStyle.Fill;
             glControl1.Load += Gl_Load;
